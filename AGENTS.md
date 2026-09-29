@@ -216,6 +216,9 @@ write_json.py
 ## LLM 结构化输出与缓存的约束
 
 - **结构化输出必须逐级降级, 不得因供应商不支持而报错退出.** 候选列表定义在 `excerpt/llm_format.py` 的 `SCHEMA_CANDIDATES`, 最后一项是"不发 `response_format`"的终结兜底 —— 它不可能再因格式被拒, 因此"供应商不支持结构化输出"在结构上就无法让该阶段失败. 全部候选被拒时只提示一次并继续.
+- **`is_format_rejection` 必须以"错误里点到格式字段名"为必要条件, 不得依赖拒绝动词的具体措辞.** 端点写法各不相同（`does not support feature: structured-outputs`, `unsupported_response_format`, `json_object is not supported` …）, 把判定绑死在任何一种动词或分隔符上都会漏判. 曾因 marker 表里只有 `structured output`（空格）与 `structured_output`（下划线）而漏掉真实返回的 `structured-outputs`（连字符 + 复数）, 导致降级链完全不生效、退化成"重试同样请求再失败". 字段名用 `_FORMAT_FIELD_PATTERN` 正则匹配, 覆盖连字符 / 下划线 / 空格与单复数.
+- **未归因的 400/422 也必须前进一格候选.** `_classify_llm_error` 对未被 `auth`/`rate_limit`/`server`/`network`/`bad_reply` 认领的 400/422 返回 `"bad_request"`, `_request_completion` 据此 `state.advance()`. 理由: `response_format` 是本模块唯一在变的请求字段, 换一个试总比重发一个已知被拒的请求划算. 这条兜底保证措辞超出已知列表时阶段仍能降级而不 abort. 只在 `advance()` 为真时 `continue`, 末位落回 `attempt += 1`, 终止性不变.
+- **`is_format_rejection` 与 `is_reasoning_rejection` 不得互相认领对方的错误.** 两个轴对应两个不同的候选列表, 走错一个代价是每个候选多一次请求. 主保证是 `llm._request_completion` 里 reasoning 检查排在格式检查**之前**（不得调换）; 次保证是 `llm_format._REASONING_AXIS_PATTERN` —— 若拒绝动词指向 `reasoning`/`thinking`/`chat_template_kwargs`/`reasoning_effort`, 格式谓词主动让位. 格式谓词**刻意不匹配** `invalid_request_error` 与裸的 `unknown parameter`, 因为那两个措辞属于 reasoning 轴.
 - **降级不消耗重试预算.** 被拒的是格式字段, 不是这次请求. `state.advance()` 返回 `True` 时应 `continue` 而不 `attempt += 1`, 否则一次探测就吃掉整条记录的重试次数.
 - **探测结论在进程内共享.** `complete_entries` 必须把同一个 `SchemaState` 传给所有 worker, 使第一个记录探出的写法被后续记录直接沿用. `_WORKING_INDEX` 只在请求**真正成功**后由 `confirm()` 写入 —— 越过一个候选只证明它被拒, 不等于下一个可用.
 - **新增 response_format 写法时, 只在 `llm_format.SCHEMA_CANDIDATES` 追加候选**, 不得在 `llm.py` 中硬编码 dialect 判断.

@@ -191,6 +191,24 @@ LLM_REASONING={"reasoning": {"enabled": false}}
   提示词 + 本地校验。全部候选都被拒时只提示一次：
   `[llm] structured output unsupported; relying on the prompt and local validation`。
 
+**怎么判断"被拒了"**：只要 400 错误里**点到了格式字段名**就算——`response_format`、
+`json_schema`、`json_object`、`guided_json` / `guided_choice`、或 `structured` output(s)
+（连字符 / 下划线 / 空格、单复数都认）。判定**不依赖拒绝动词的具体措辞**，因为
+每个端点的写法都不同：
+
+```
+does not support feature: structured-outputs     ← OpenRouter
+unsupported_response_format                       ← 另一种端点
+json_object is not supported
+```
+
+同理，**任何无法归因的 400/422** 也会让候选前进一格：`response_format` 是本程序唯一在变的
+请求字段，换一个试总比重发一个已知被拒的请求划算。这条兜底保证了即使遇到完全没见过的
+措辞，阶段也不会直接报错退出。
+
+反过来，错误里**没有**格式字段名时（`unsupported model`、`not supported in your region`、
+`... is not a valid model ID`）判定为**否**，不会误伤。
+
 ### LLM 的并发、超时与重试
 
 | 行为      | 默认                                                          | 说明                                                                    |
@@ -377,7 +395,7 @@ pytest                                   # 已激活虚拟环境时
 .venv/Scripts/python.exe -m pytest       # Windows 直接指定解释器
 ```
 
-预期结果：**305 passed**。
+预期结果：**319 passed**。
 
 ### 2. 常用测试命令
 
@@ -408,10 +426,10 @@ pytest -x                                   # 首个失败即停
 | ---------------------- | --- | ------------------------------------------- |
 | `test_extractor.py`    | 19  | 加粗提取、单词判定、类型分类、去重合并                         |
 | `test_lookup.py`       | 44  | 缓存读写、HTTP 重试与分类、MW markup 清洗、MW 数据映射、写 JSON |
-| `test_llm.py`          | 55  | 提示词构造、schema 校验、幂等跳过已 filled 记录、错误摘要、超时与 token 上限、退避重试、错误分类、熔断、并发、推理强度降级、结构化输出降级、逐条流式输出、缓存命中 / 回填 |
+| `test_llm.py`          | 58  | 提示词构造、schema 校验、幂等跳过已 filled 记录、错误摘要、超时与 token 上限、退避重试、错误分类、熔断、并发、推理强度降级、结构化输出降级、逐条流式输出、缓存命中 / 回填 |
 | `test_llm_cache.py`    | 29  | LLM 输出缓存：模型名消毒、键构造、读写往返、拷贝语义、原子写、损坏 / 版本不符容错、禁用态 |
 | `test_llm_check.py`    | 27  | LLM 预检：指纹、缓存读写、HTTP 分类、端点拼接、错误解包、探针关闭思考      |
-| `test_llm_format.py`   | 16  | 结构化输出候选列表：顺序、schema 注入、非破坏性、越界退化、进程内记忆、线程安全 |
+| `test_llm_format.py`   | 27  | 结构化输出候选列表：顺序、schema 注入、非破坏性、越界退化、进程内记忆、线程安全、拒绝识别（连字符 / 复数 / 各类措辞与反例） |
 | `test_llm_reasoning.py` | 10 | 思考强度候选列表：覆盖优先、逐个降级、兜底、进程内缓存、线程安全           |
 | `test_write_md.py`     | 11  | 笔记 / 索引渲染、表头统计                              |
 | `test_latex.py`        | 49  | LaTeX 转义、条目渲染、文件布局、`xelatex` 查找与编译（含缺工具回退）  |
