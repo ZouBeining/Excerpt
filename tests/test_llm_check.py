@@ -82,6 +82,28 @@ def test_cache_roundtrip(tmp_path):
     assert payload["version"] == CHECK_VERSION
 
 
+def test_probe_payload_suppresses_reasoning():
+    """The probe must carry the same reasoning hint as a real completion.
+
+    A reasoning model spends a chain of thought even on a one-token probe,
+    which is slow and — on a free tier — much more likely to be throttled.
+    """
+    assert llm_check._PROBE_PAYLOAD["reasoning"] == {"enabled": False}
+
+
+def test_probe_sends_the_reasoning_field():
+    from conftest import StubResponse, StubSession
+
+    configure_llm(key="k", url="https://x/v1", model="m")
+    session = StubSession([StubResponse({"ok": True}, status_code=200)])
+
+    check_llm_config(use_cache=False, session=session)
+
+    sent = session.calls[0]["json"]
+    assert sent["reasoning"] == {"enabled": False}
+    assert sent["model"] == "m"
+
+
 def test_cache_ignores_failures(tmp_path):
     path = tmp_path / "llm.check.json"
     write_check_cache("fp", CheckResult(ok=False, code="NOPE"), path=path)

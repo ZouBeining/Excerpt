@@ -48,7 +48,11 @@ __all__ = [
 ]
 
 #: Bump when the fingerprint inputs or the meaning of a cached verdict change.
-CHECK_VERSION = 1
+#: Bumped to 2 when the probe payload gained its reasoning-suppression field:
+#: the payload is deliberately not part of the cache key, so the version bump
+#: is what forces a re-probe and keeps an old "verified" verdict from standing
+#: in for a request the provider has not actually accepted.
+CHECK_VERSION = 2
 
 #: Endpoint appended to ``OPENAI_BASE_URL`` for the probe.
 _COMPLETIONS_PATH = "/chat/completions"
@@ -67,12 +71,24 @@ def _completions_endpoint(base_url: str) -> str:
     return text + _COMPLETIONS_PATH
 
 #: Small, cheap probe payload: one token, no schema, no streaming.
+#:
+#: ``reasoning`` is sent so the probe exercises the *same* shape as a real
+#: completion.  Without it, a reasoning model would spend a chain of thought on
+#: a request that asked for one token, which is slow, bills tokens nobody reads,
+#: and — on a busy free tier — is far likelier to come back 429.  A throttled
+#: probe is never cached, so each throttled run would pay for another probe.
+#:
+#: Only this one field is sent.  The vendor ``chat_template_kwargs`` spellings
+#: are left to the completion stage's candidate fallback, because a provider
+#: that does not recognise them answers 400, and a bare 400 is classified as a
+#: fatal configuration error.
 _PROBE_PAYLOAD: dict[str, Any] = {
     "messages": [
         {"role": "user", "content": "Reply with the single word: ok"},
     ],
     "max_tokens": 1,
     "temperature": 0,
+    "reasoning": {"enabled": False},
 }
 
 
