@@ -25,8 +25,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -34,10 +37,20 @@ from common.config import (
     Artifacts,
     artifacts,
     get_dict_config,
+    get_session_settings,
     normalize_title,
 )
 
-__all__ = ["build", "convert", "escape_latex", "main", "run", "write_tex"]
+__all__ = [
+    "build",
+    "compile_tex",
+    "convert",
+    "escape_latex",
+    "find_xelatex",
+    "main",
+    "run",
+    "write_tex",
+]
 
 #: Package directory holding the static TeX files.
 _PACKAGE_DIR = Path(__file__).resolve().parent
@@ -261,6 +274,164 @@ def _copy_static(art: Artifacts, tex_dir: Path, title: str) -> tuple[Path, Path]
 
 
 # ---------------------------------------------------------------------------
+# Compilation
+# ---------------------------------------------------------------------------
+
+#: MiKTeX / TeX Live install locations probed when ``xelatex`` is not on PATH.
+_XELATEX_FALLBACK_DIRS = (
+    r"E:\MiKTeX\miktex\bin\x64",
+    r"C:\Program Files\MiKTeX\miktex\bin\x64",
+    r"C:\Program Files (x86)\MiKTeX\miktex\bin\x64",
+    r"C:\texlive\2024\bin\windows",
+    r"C:\texlive\2025\bin\windows",
+)
+
+
+def find_xelatex(explicit: str | Path | None = None) -> str | None:
+    """Return a usable ``xelatex`` command, or ``None`` when unavailable.
+
+    Resolution order: an explicit path/name, then ``PATH``, then the common
+    MiKTeX and TeX Live install directories.  Returning ``None`` instead of
+    raising lets callers degrade to "tex only" without failing the pipeline.
+    """
+    if explicit:
+        candidate = Path(str(explicit))
+        if candidate.is_file():
+            return str(candidate)
+        # A bare name may still be resolvable through PATH.
+        resolved = shutil.which(str(explicit))
+        if resolved:
+            return resolved
+        return None
+
+    resolved = shutil.which("xelatex")
+    if resolved:
+        return resolved
+
+    env_dir = str(get_session_settings().get("xelatex") or "").strip()
+    if env_dir:
+        candidate = Path(env_dir)
+        if candidate.is_file():
+            return str(candidate)
+        candidate = candidate / "xelatex.exe"
+        if candidate.is_file():
+            return str(candidate)
+
+    for directory in _XELATEX_FALLBACK_DIRS:
+        for name in ("xelatex.exe", "xelatex"):
+            candidate = Path(directory) / name
+            if candidate.is_file():
+                return str(candidate)
+
+    return None
+
+
+def compile_tex(
+    tex_dir: str | Path,
+    *,
+    main_tex: str = "main.tex",
+    xelatex: str | Path | None = None,
+    passes: int = 2,
+    timeout: float = 300.0,
+) -> dict[str, Any]:
+    """Compile ``main.tex`` to PDF and return a summary dict.
+
+    Two passes are the default because the cross-references and the table of
+    contents are only stable after the second run.  The program is invoked with
+    ``-interaction=nonstopmode`` so a missing glyph cannot block on stdin and
+    hang a non-interactive caller.
+
+    Never raises on a LaTeX error: the returned ``ok`` flag and ``log`` carry
+    the diagnosis, and ``pdf`` is ``None`` unless a PDF was actually produced.
+    """
+    directory = Path(tex_dir)
+    command = find_xelatex(xelatex)
+
+    if command is None:
+        return {
+            "ok": False,
+            "pdf": None,
+            "command": None,
+            "passes": 0,
+            "skipped": True,
+            "log": "",
+            "reason": "xelatex not found; install MiKTeX or TeX Live, or pass --xelatex",
+        }
+
+    if not (directory / main_tex).is_file():
+        return {
+            "ok": False,
+            "pdf": None,
+            "command": command,
+            "passes": 0,
+            "skipped": False,
+            "log": "",
+            "reason": f"{main_tex} not found in {directory}",
+        }
+
+    argv = [
+        command,
+        "-interaction=nonstopmode",
+        "-halt-on-error",
+        main_tex,
+    ]
+
+    combined: list[str] = []
+    ok = True
+    used = 0
+    for _ in range(max(1, passes)):
+        used += 1
+        try:
+            completed = subprocess.run(
+                argv,
+                cwd=str(directory),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "ok": False,
+                "pdf": None,
+                "command": command,
+                "passes": used,
+                "skipped": False,
+                "log": "".join(combined),
+                "reason": f"could not run xelatex: {exc}",
+            }
+
+        output = completed.stdout.decode("utf-8", errors="replace")
+        combined.append(output)
+        if completed.returncode != 0:
+            ok = False
+            break
+
+    pdf_path = directory / f"{Path(main_tex).stem}.pdf"
+    produced = pdf_path if pdf_path.is_file() else None
+
+    return {
+        "ok": ok and produced is not None,
+        "pdf": str(produced) if produced else None,
+        "command": command,
+        "passes": used,
+        "skipped": False,
+        "log": "\n".join(combined),
+        "reason": "" if (ok and produced) else _first_error("".join(combined)),
+    }
+
+
+def _first_error(log: str) -> str:
+    """Pull the first LaTeX error line out of a compile log."""
+    for line in log.splitlines():
+        if line.startswith("!"):
+            return line.strip()
+        if "not found" in line and "font" in line.lower():
+            return line.strip()
+    return "compilation failed; see the log for details"
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -270,8 +441,16 @@ def build(
     title: str,
     tex_dir: str | Path,
     dict_slug: str = "",
+    compile_pdf: bool = False,
+    xelatex: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Write every LaTeX file for *entries* and return their paths."""
+    """Write every LaTeX file for *entries* and return their paths.
+
+    When *compile_pdf* is set, ``xelatex`` runs twice and the resulting PDF
+    path is added under the ``pdf`` key.  A missing ``xelatex`` is not an
+    error: the ``.tex`` files are still written and ``compile`` reports why the
+    PDF was skipped.
+    """
     resolved_dir = Path(tex_dir)
     resolved_dir.mkdir(parents=True, exist_ok=True)
 
@@ -284,13 +463,23 @@ def build(
 
     main_path, preamble_path = _copy_static(art, resolved_dir, art.title)
 
-    return {
+    result: dict[str, Any] = {
         "main": str(main_path),
         "preamble": str(preamble_path),
         "unit": str(unit_path),
         "entries": len(entries),
         "title": art.title,
+        "pdf": None,
+        "compile": None,
     }
+
+    if compile_pdf:
+        result["compile"] = compile_tex(
+            resolved_dir, main_tex=main_path.name, xelatex=xelatex
+        )
+        result["pdf"] = result["compile"]["pdf"]
+
+    return result
 
 
 def write_tex(
@@ -298,6 +487,8 @@ def write_tex(
     art: Artifacts,
     *,
     dict_slug: str = "",
+    compile_pdf: bool = False,
+    xelatex: str | Path | None = None,
 ) -> dict[str, Any]:
     """Pipeline entry: build the LaTeX documents into ``art.out_dir``."""
     return build(
@@ -305,12 +496,27 @@ def write_tex(
         title=art.title,
         tex_dir=art.out_dir,
         dict_slug=dict_slug or art.dict_slug,
+        compile_pdf=compile_pdf,
+        xelatex=xelatex,
     )
 
 
-def run(entries: Sequence[dict[str, Any]], art: Artifacts, *, dict_slug: str = ""):
+def run(
+    entries: Sequence[dict[str, Any]],
+    art: Artifacts,
+    *,
+    dict_slug: str = "",
+    compile_pdf: bool = False,
+    xelatex: str | Path | None = None,
+):
     """Alias of :func:`write_tex` for pipeline uniformity."""
-    return write_tex(entries, art, dict_slug=dict_slug)
+    return write_tex(
+        entries,
+        art,
+        dict_slug=dict_slug,
+        compile_pdf=compile_pdf,
+        xelatex=xelatex,
+    )
 
 
 def load_entries(path: str | Path) -> list[dict[str, Any]]:
@@ -388,6 +594,8 @@ def convert(
     tex_dir: str | Path | None = None,
     title: str | None = None,
     dict_slug: str = "",
+    compile_pdf: bool = False,
+    xelatex: str | Path | None = None,
 ) -> dict[str, Any]:
     """Convert a ``.words.json`` or ``.md`` file into LaTeX documents."""
     source_path = Path(source)
@@ -399,6 +607,8 @@ def convert(
         title=resolved_title,
         tex_dir=target_dir,
         dict_slug=dict_slug or get_dict_config()["slug"],
+        compile_pdf=compile_pdf,
+        xelatex=xelatex,
     )
 
 
@@ -433,6 +643,18 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Dictionary slug used in file names (default: the active one)",
     )
+    parser.add_argument(
+        "--compile",
+        dest="compile_latex",
+        action="store_true",
+        default=False,
+        help="Additionally compile the .tex into a PDF with xelatex",
+    )
+    parser.add_argument(
+        "--xelatex",
+        default=None,
+        help="Path to the xelatex executable (default: found on PATH)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -441,6 +663,8 @@ def main(argv: list[str] | None = None) -> int:
             tex_dir=args.output_dir,
             title=args.title,
             dict_slug=args.dict_choice or "",
+            compile_pdf=args.compile_latex,
+            xelatex=args.xelatex,
         )
     except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
         print(f"[error] {exc}")
@@ -449,11 +673,30 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[write] {result['main']}")
     print(f"[write] {result['preamble']}")
     print(f"[write] {result['unit']}")
+
+    if args.compile_latex:
+        return _report_compile(result)
+
     print(
         f"[tex] {result['entries']} entries in total; compile with: "
         f'cd "{Path(args.output_dir) if args.output_dir else args.source.parent}" '
         "&& xelatex main.tex (twice)"
     )
+    return 0
+
+
+def _report_compile(result: dict[str, Any]) -> int:
+    """Print the outcome of a compile request and return the exit code."""
+    info = result.get("compile") or {}
+    if info.get("skipped"):
+        print(f"[tex] skipped compilation: {info.get('reason')}")
+        return 0
+    if not info.get("ok"):
+        print(f"[tex] compilation failed: {info.get('reason')}")
+        return 1
+
+    print(f"[pdf] {result['pdf']}")
+    print(f"[tex] compiled with {info.get('passes')} xelatex pass(es)")
     return 0
 
 

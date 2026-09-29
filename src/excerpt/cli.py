@@ -56,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
             proxy=args.proxy,
             cache_path=str(args.cache_path) if args.cache_path else None,
             use_cache=not args.no_cache,
+            compile_latex=args.compile_latex,
+            xelatex=args.xelatex,
         )
     except ValueError as exc:
         print(f"[error] {exc}", file=sys.stderr)
@@ -179,14 +181,25 @@ def main(argv: list[str] | None = None) -> int:
             title=title,
             tex_dir=out_dir,
             dict_slug=dict_slug,
+            compile_pdf=config.get_compile_latex(),
+            xelatex=args.xelatex,
         )
         print(f"[write] {result['main']}")
         print(f"[write] {result['preamble']}")
         print(f"[write] {result['unit']}")
-        print(
-            f"[tex] {result['entries']} entries; compile with "
-            f'cd "{out_dir}" && xelatex main.tex (twice)'
-        )
+
+        info = result.get("compile")
+        if info and info.get("skipped"):
+            print(f"[tex] .tex written; compilation skipped: {info['reason']}")
+        elif info and not info.get("ok"):
+            print(f"[tex] compilation failed: {info['reason']}")
+        elif info:
+            print(f"[pdf] {result['pdf']} ({info['passes']} xelatex passes)")
+        else:
+            print(
+                f"[tex] {result['entries']} entries; compile with "
+                f'cd "{out_dir}" && xelatex main.tex (twice)'
+            )
     else:
         print("[tex] skipped (--no-latex)")
 

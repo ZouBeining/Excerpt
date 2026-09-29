@@ -93,6 +93,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Turn off LaTeX output (default: on)",
     )
+    compile_group = parser.add_mutually_exclusive_group()
+    compile_group.add_argument(
+        "--compile",
+        dest="compile_latex",
+        action="store_true",
+        default=None,
+        help="Compile the generated .tex to PDF with xelatex (default: off)",
+    )
+    compile_group.add_argument(
+        "--no-compile",
+        dest="compile_latex",
+        action="store_false",
+        default=None,
+        help="Never compile the LaTeX output (overrides COMPILE_LATEX)",
+    )
+    parser.add_argument(
+        "--xelatex",
+        type=str,
+        default=None,
+        help="Path to the xelatex executable (default: found on PATH)",
+    )
     parser.add_argument(
         "--no-lemma",
         action="store_true",

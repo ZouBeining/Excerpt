@@ -50,6 +50,7 @@ __all__ = [
     # dict choice
     "DEFAULT_DICT_CHOICE",
     "DEFAULT_USE_LLM",
+    "DEFAULT_COMPILE_LATEX",
     "DICT_CHOICES",
     "LLM_DICTIONARY_NAME",
     "valid_dict_choice",
@@ -59,6 +60,7 @@ __all__ = [
     "get_dict_slug",
     "get_dict_api_key",
     "get_use_llm",
+    "get_compile_latex",
     "get_openai_settings",
     "get_session_settings",
     "is_dict_choice_valid",
@@ -173,6 +175,9 @@ DEFAULT_DICT_CHOICE = "MW"
 
 #: LLM completion is opt-in; ``USE_LLM`` in ``.env`` or ``--use-llm`` turns it on.
 DEFAULT_USE_LLM = False
+
+#: LaTeX compilation runs only when asked: ``--compile`` or ``COMPILE_LATEX=true``.
+DEFAULT_COMPILE_LATEX = False
 
 DICT_CHOICES: dict[str, dict[str, Any]] = {
     "MW": {
@@ -304,6 +309,7 @@ _dict_config: dict[str, Any] | None = None
 _dict_api_key: str = ""
 
 _use_llm: bool = DEFAULT_USE_LLM
+_compile_latex: bool = DEFAULT_COMPILE_LATEX
 _openai_api_key: str = ""
 _openai_base_url: str = ""
 _openai_model: str = ""
@@ -316,6 +322,7 @@ _session_settings: dict[str, Any] = {
     "proxy": "",
     "cache_path": "",
     "use_cache": True,
+    "xelatex": "",
 }
 
 
@@ -337,6 +344,8 @@ def configure(
     proxy: str | None = None,
     cache_path: str | None = None,
     use_cache: bool | None = None,
+    compile_latex: bool | None = None,
+    xelatex: str | None = None,
 ) -> None:
     """Load environment variables and apply runtime configuration.
 
@@ -348,7 +357,8 @@ def configure(
     """
     global _configured
     global _dict_choice, _dict_config, _dict_api_key
-    global _use_llm, _openai_api_key, _openai_base_url, _openai_model
+    global _use_llm, _compile_latex
+    global _openai_api_key, _openai_base_url, _openai_model
 
     # ``override=True`` so that ``.env`` beats a pre-existing shell variable:
     # the documented priority is CLI > .env > config.py.
@@ -404,6 +414,16 @@ def configure(
         _openai_base_url = ""
         _openai_model = ""
 
+    if compile_latex is not None:
+        _compile_latex = bool(compile_latex)
+    else:
+        env_compile = os.getenv("COMPILE_LATEX")
+        _compile_latex = (
+            _parse_bool(env_compile)
+            if env_compile not in (None, "")
+            else DEFAULT_COMPILE_LATEX
+        )
+
     # Session tuning: CLI value when given, otherwise .env, otherwise default.
     env_timeout = os.getenv("TIMEOUT")
     env_retry = os.getenv("RETRY")
@@ -411,6 +431,7 @@ def configure(
     env_proxy = os.getenv("PROXY")
     env_cache_path = os.getenv("EXCERPT_CACHE_PATH")
     env_out_dir = os.getenv("OUTPUT_DIR")
+    env_xelatex = os.getenv("XELATEX")
 
     _session_settings["timeout"] = float(
         timeout
@@ -433,6 +454,9 @@ def configure(
         bool(use_cache) if use_cache is not None else True
     )
     _session_settings["env_out_dir"] = str(env_out_dir or "").strip()
+    _session_settings["xelatex"] = str(
+        xelatex if xelatex is not None else (env_xelatex or "")
+    ).strip()
 
     _configured = True
 
@@ -452,9 +476,10 @@ def get_dict_choice() -> str:
 def get_dict_config(dict_choice: str | None = None) -> dict[str, Any]:
     """Return the configuration dict for *dict_choice*.
 
-    If *dict_choice* is omitted, the active dictionary is used.
+    If *dict_choice* is omitted — or is an empty/blank string, which callers
+    commonly pass as "no explicit choice" — the active dictionary is used.
     """
-    if dict_choice is None:
+    if dict_choice is None or not str(dict_choice).strip():
         _ensure_configured()
         assert _dict_config is not None
         return _dict_config
@@ -484,6 +509,12 @@ def get_use_llm() -> bool:
     """Return whether LLM completion is enabled."""
     _ensure_configured()
     return _use_llm
+
+
+def get_compile_latex() -> bool:
+    """Return whether the LaTeX documents should be compiled to PDF."""
+    _ensure_configured()
+    return _compile_latex
 
 
 def get_openai_settings() -> tuple[str, str, str]:
