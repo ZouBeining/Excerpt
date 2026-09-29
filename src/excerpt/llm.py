@@ -7,9 +7,10 @@ sees them.
 
 The provider is described entirely by :func:`common.config.get_openai_settings`
 (an OpenAI-compatible Chat Completions endpoint), so nothing here is tied to a
-particular vendor.  When the provider advertises JSON-schema support the
-structured-output path is used; otherwise the prompt demands strict JSON and
-the reply is validated and retried.
+particular vendor.  Structured output is attempted through the candidate list
+in :mod:`excerpt.llm_format`, which walks from full JSON Schema down to
+"send nothing and rely on the prompt"; a provider that understands none of the
+dialects therefore still completes every record instead of failing the stage.
 
 Output is English only, and the analysis is angled per record type:
 
@@ -47,7 +48,7 @@ from common.config import (
 
 from lookup import write_json
 
-from . import llm_reasoning
+from . import llm_format, llm_reasoning
 
 __all__ = ["SYSTEM_PROMPT", "complete_entries", "run", "schema_for"]
 
@@ -262,7 +263,7 @@ def _request_completion(
     *,
     model: str,
     entry: BoldEntry,
-    use_schema: bool,
+    schema_state: llm_format.SchemaState | None = None,
     attempts: int = 4,
     timeout: float = 60.0,
     backoff: float = 0.5,
@@ -275,21 +276,32 @@ def _request_completion(
 
     * authentication/permission verdicts (401/403) are fatal — raised as
       :class:`LLMAbort` so the caller can abandon the batch immediately;
-    * a rejected ``json_schema`` downgrades to ``json_object`` once and
-      continues (the prompt still spells out the required keys);
-    * a rejected reasoning-suppression field is raised as
+    * a refused structured-output dialect advances to the next candidate and
+      does **not** consume a retry: the request itself was fine, only the
+      format field was not understood.  After the last candidate there is
+      nothing left to refuse, so a schema disagreement can never abort the
+      stage;
+    * a refused reasoning-suppression field is raised as
       :class:`ReasoningUnsupported` so the caller can try the next candidate;
     * everything else — timeouts, rate limits, 5xx, malformed JSON — is
       retried up to *attempts* times with a linearly growing pause.
+
+    *schema_state* carries the dialect chosen so far.  Passing the same
+    instance for every record is what stops a second record from re-probing a
+    dialect the first one already proved unsupported; omitting it makes this
+    call self-contained.
     """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": _user_prompt(entry)},
     ]
 
+    state = schema_state if schema_state is not None else llm_format.SchemaState()
     last_error: Exception | None = None
+    announced_unsupported = False
 
-    for attempt in range(max(1, attempts)):
+    attempt = 0
+    while attempt < max(1, attempts):
         if attempt:
             time.sleep(max(backoff, 0.0) * attempt)
         try:
@@ -303,21 +315,17 @@ def _request_completion(
                 kwargs["max_tokens"] = max_tokens
             if extra_body:
                 kwargs["extra_body"] = extra_body
-            if use_schema:
-                kwargs["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "excerpt_entry",
-                        "strict": True,
-                        "schema": _RESPONSE_SCHEMA,
-                    },
-                }
-            else:
-                kwargs["response_format"] = {"type": "json_object"}
+            format_payload = llm_format.candidate_for(
+                state.index(), _RESPONSE_SCHEMA
+            )
+            if format_payload is not None:
+                kwargs["response_format"] = format_payload
 
             response = client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content or ""
-            return _validate(json.loads(content))
+            payload = _validate(json.loads(content))
+            state.confirm()
+            return payload
         except LLMAbort:
             raise
         except ReasoningUnsupported:
@@ -328,24 +336,36 @@ def _request_completion(
                 raise LLMAbort(exc) from exc
             # The reasoning check must come first.  Providers report an unknown
             # ``extra_body`` field with wording such as ``invalid_request_error``
-            # that the schema test below also matches, and downgrading the
-            # schema would leave the rejected field in place on every retry.
+            # that a format test would also match, and following the wrong
+            # candidate list wastes a request per candidate.
             if extra_body and llm_reasoning.is_reasoning_rejection(exc):
                 raise ReasoningUnsupported(str(exc)) from exc
-            # A provider that rejects json_schema should fall back once.
-            if use_schema and _looks_like_schema_rejection(exc):
-                use_schema = False
-                continue
+            # A provider that refuses a dialect should fall back to the next.
+            if llm_format.is_format_rejection(exc):
+                if state.advance():
+                    # The dialect was refused, not the request: this does not
+                    # consume the retry budget.
+                    continue
+                # Every dialect was refused.  Report it once and keep going
+                # with the prompt plus local validation rather than failing.
+                if not announced_unsupported:
+                    announced_unsupported = True
+                    print(
+                        "[llm] structured output unsupported; relying on the "
+                        "prompt and local validation"
+                    )
+            attempt += 1
 
     raise RuntimeError(f"LLM completion failed: {last_error}")
 
 
 def _looks_like_schema_rejection(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return any(
-        marker in message
-        for marker in ("json_schema", "response_format", "unsupported", "invalid_request")
-    )
+    """Deprecated alias of :func:`excerpt.llm_format.is_format_rejection`.
+
+    Kept because the narrower predicate now lives with the candidate list it
+    belongs to, while callers (and older tests) may still reach for this name.
+    """
+    return llm_format.is_format_rejection(exc)
 
 
 def _extract_status(text: str) -> int:
@@ -519,6 +539,11 @@ def complete_entries(
     worker touches a file, because ``lookup.write_json`` rewrites
     ``.words.json``/``.errors.json`` with a read-merge-write that would race if
     several threads ran it at once.
+
+    ``use_schema`` is retained for backward compatibility only.  Setting it to
+    ``False`` starts the dialect walk at its terminal entry, i.e. sends no
+    ``response_format``; the default lets :mod:`excerpt.llm_format` discover
+    what the endpoint actually understands.
     """
     targets = [
         entry
@@ -545,6 +570,13 @@ def complete_entries(
     # rate-limited endpoint with several doomed requests at once.
     breaker._enabled = workers > 1
     reasoning = llm_reasoning.ReasoningState(override=llm["reasoning"])
+    # One state shared by every record, so a dialect that the first record
+    # proves unsupported is never re-probed by the second.  Combined with the
+    # process-wide memory inside llm_format, the probing cost is paid once per
+    # process rather than once per record or once per run.
+    schema_state = llm_format.SchemaState(
+        start_index=0 if use_schema else len(llm_format.SCHEMA_CANDIDATES) - 1
+    )
 
     def _one(index: int, entry: BoldEntry) -> tuple[int, BoldEntry, dict | None, str]:
         """Issue one request.  Deliberately free of any shared mutation."""
@@ -556,7 +588,7 @@ def complete_entries(
                     client,
                     model=model,
                     entry=entry,
-                    use_schema=use_schema,
+                    schema_state=schema_state,
                     attempts=llm["retries"] + 1,
                     timeout=llm["timeout"],
                     backoff=llm["backoff"],

@@ -6,6 +6,7 @@ the LLM are always exercised through mocks or stub sessions.
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -49,14 +50,14 @@ def isolated_env(monkeypatch, tmp_path):
     # passing an explicit empty path, which means "no .env at all".
     monkeypatch.setenv("EXCERPT_CACHE_PATH", str(tmp_path / "cache.json"))
     config.configure(dict_choice="MW", use_llm=False, env_path="")
-    # The reasoning-probe verdict is a module-level cache, so it must not leak
-    # from one test into the next.
-    try:
-        from excerpt import llm_reasoning
-    except ImportError:  # pragma: no cover - module added in a later stage
-        pass
-    else:
-        llm_reasoning.reset_probe_cache()
+    # The reasoning- and dialect-probe verdicts are module-level caches, so
+    # they must not leak from one test into the next.
+    for module_name in ("llm_reasoning", "llm_format"):
+        try:
+            module = importlib.import_module(f"excerpt.{module_name}")
+        except ImportError:  # pragma: no cover - module added in a later stage
+            continue
+        module.reset_probe_cache()
     yield tmp_path
 
 

@@ -18,7 +18,7 @@ from common.config import (
     SOURCE_LLM,
     BoldEntry,
 )
-from excerpt import llm, llm_reasoning
+from excerpt import llm, llm_format, llm_reasoning
 
 
 @pytest.fixture(autouse=True)
@@ -456,6 +456,136 @@ class TestReasoningSuppression:
         assert entry.code == CODE_OK
         # The last resort sends no reasoning field at all.
         assert "extra_body" not in client.recorder[-1]
+
+
+class TestSchemaFallback:
+    """A refused structured-output dialect must degrade, never abort."""
+
+    def setup_method(self):
+        llm_format.reset_probe_cache()
+
+    def test_schema_rejection_tries_the_next_dialect(self):
+        entry = make_entry()
+        client = FakeClient(
+            [
+                RuntimeError(
+                    "Error code: 400 - Unsupported response_format type json_schema"
+                ),
+                GOOD_REPLY,
+            ]
+        )
+
+        llm.complete_entries([entry], client=client, model="m")
+
+        assert entry.code == CODE_OK
+        assert client.recorder[0]["response_format"]["json_schema"]["strict"] is True
+        # The second request used a later dialect.
+        assert (
+            client.recorder[1]["response_format"]
+            != client.recorder[0]["response_format"]
+        )
+
+    def test_a_downgrade_does_not_consume_the_retry_budget(self):
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_retries=0
+        )
+        entry = make_entry()
+        # One retry budget (a single attempt); the dialect walk must still
+        # reach the working candidate without being starved by it.
+        client = FakeClient(
+            [
+                RuntimeError("Error code: 400 - unsupported response_format"),
+                GOOD_REPLY,
+            ]
+        )
+
+        llm.complete_entries([entry], client=client, model="m")
+
+        assert entry.code == CODE_OK
+        assert len(client.recorder) == 2
+
+    def test_schema_downgrade_is_remembered_across_records(self):
+        """A dialect proved unsupported must not be re-probed per record."""
+        first = make_entry("give up", "phrase")
+        second = make_entry("hold on", "phrase")
+        client = FakeClient(
+            [
+                RuntimeError("Error code: 400 - unsupported response_format"),
+                GOOD_REPLY,
+                GOOD_REPLY,
+            ]
+        )
+
+        llm.complete_entries([first, second], client=client, model="m")
+
+        assert first.code == CODE_OK
+        assert second.code == CODE_OK
+        # Exactly one request ever carried the *strict* schema dialect: the
+        # rejection is remembered for the rest of the run.  (Later dialects
+        # also use type "json_schema", so the strict flag is what identifies
+        # the first candidate.)
+        strict_calls = [
+            call
+            for call in client.recorder
+            if call.get("response_format", {})
+            .get("json_schema", {})
+            .get("strict")
+            is True
+        ]
+        assert len(strict_calls) == 1
+
+    def test_all_dialects_rejected_still_succeeds(self):
+        """The terminal candidate sends no response_format and cannot fail."""
+        entry = make_entry()
+        refusals = [
+            RuntimeError(
+                f"Error code: 400 - unsupported response_format variant {i}"
+            )
+            for i in range(len(llm_format.SCHEMA_CANDIDATES))
+        ]
+        client = FakeClient(refusals + [GOOD_REPLY])
+
+        llm.complete_entries([entry], client=client, model="m")
+
+        assert entry.code == CODE_OK
+        assert "response_format" not in client.recorder[-1]
+
+    def test_every_dialect_rejected_still_terminates(self, monkeypatch):
+        """A provider that refuses everything must not loop forever."""
+        monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_retries=0
+        )
+        entry = make_entry()
+        client = FakeClient(
+            [RuntimeError("Error code: 400 - unsupported response_format")] * 40
+        )
+
+        llm.complete_entries([entry], client=client, model="m")
+
+        # Bounded: one attempt against each dialect, then one more with the
+        # terminal (format-free) candidate.  The record stays pending.
+        assert len(client.recorder) <= len(llm_format.SCHEMA_CANDIDATES) + 1
+        assert entry.code == CODE_NOT_A_SINGLE_WORD
+        assert entry.source == SOURCE_EXTRACTOR
+
+    def test_unsupported_is_announced_once(self, capsys):
+        entry = make_entry()
+        refusals = [
+            RuntimeError("Error code: 400 - unsupported response_format")
+        ] * len(llm_format.SCHEMA_CANDIDATES)
+        client = FakeClient(refusals + [GOOD_REPLY])
+
+        llm.complete_entries([entry], client=client, model="m")
+        out = capsys.readouterr().out
+
+        assert out.count("structured output unsupported") == 1
+
+    def test_format_rejection_does_not_swallow_a_reasoning_rejection(self):
+        """The two candidate lists must stay independent."""
+        assert not llm_format.is_format_rejection(
+            RuntimeError("Error code: 400 - unknown parameter: reasoning")
+        )
 
 
 class TestErrorSummary:
