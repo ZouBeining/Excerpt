@@ -7,6 +7,7 @@ network.
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -62,16 +63,21 @@ class FakeChat:
     def __init__(self, payloads, recorder):
         self._payloads = list(payloads)
         self._recorder = recorder
+        # Worker threads call ``create`` concurrently, so the pop-and-append
+        # pair below must not interleave: without this guard a run with
+        # several workers could hand the same canned reply to two records.
+        self._lock = threading.Lock()
 
     @property
     def completions(self):
         return self
 
     def create(self, **kwargs):
-        self._recorder.append(kwargs)
-        if not self._payloads:
-            raise RuntimeError("no more canned responses")
-        payload = self._payloads.pop(0)
+        with self._lock:
+            self._recorder.append(kwargs)
+            if not self._payloads:
+                raise RuntimeError("no more canned responses")
+            payload = self._payloads.pop(0)
         if isinstance(payload, Exception):
             raise payload
         return FakeCompletion(payload)
@@ -400,6 +406,102 @@ class TestConcurrency:
         llm.complete_entries(
             [make_entry()], client=FakeClient([GOOD_REPLY]), model="m", workers=1
         )
+
+
+class TestStreaming:
+    """Each record is reported as soon as it settles, not in one burst."""
+
+    def test_serial_run_prints_before_the_next_request_starts(self):
+        """With workers=1 the first line must land before request two."""
+        order: list[str] = []
+
+        class OrderingClient:
+            def __init__(self):
+                self.chat = self
+                self._count = 0
+
+            @property
+            def completions(self):
+                return self
+
+            def create(self, **kwargs):
+                order.append(f"request {self._count + 1}")
+                self._count += 1
+                return FakeCompletion(GOOD_REPLY)
+
+        entries = [make_entry(f"phrase {i}", "phrase") for i in range(3)]
+        client = OrderingClient()
+
+        # Patch print just for this test's window so the interleaving of
+        # "request N" and the per-record line is observable.
+        import builtins
+
+        original = builtins.print
+
+        def spy(*args, **kwargs):
+            text = " ".join(str(arg) for arg in args)
+            if "[llm " in text:
+                order.append(f"print {text.split('/')[0].split()[-1]}")
+            original(*args, **kwargs)
+
+        builtins.print = spy
+        try:
+            llm.complete_entries(entries, client=client, model="m", workers=1)
+        finally:
+            builtins.print = original
+
+        # request 1, print 1, request 2, print 2, request 3, print 3
+        assert order == [
+            "request 1",
+            "print 1",
+            "request 2",
+            "print 2",
+            "request 3",
+            "print 3",
+        ]
+
+    def test_concurrent_completions_are_still_ordered_and_complete(self, capsys):
+        entries = [make_entry(f"phrase {i}", "phrase") for i in range(5)]
+        client = FakeClient([GOOD_REPLY] * 5)
+
+        llm.complete_entries(entries, client=client, model="m", workers=4)
+        out = capsys.readouterr().out
+
+        positions = [out.index(f"[llm {i}/5]") for i in range(1, 6)]
+        assert positions == sorted(positions)
+        assert all(entry.code == CODE_OK for entry in entries)
+
+    def test_an_out_of_order_completion_does_not_skip_the_queue(self, capsys):
+        """A fast record behind a slow one must wait, then flush in order."""
+        import time as time_module
+
+        class SlowFirstClient:
+            def __init__(self):
+                self.chat = self
+                self._lock = threading.Lock()
+                self._count = 0
+
+            @property
+            def completions(self):
+                return self
+
+            def create(self, **kwargs):
+                with self._lock:
+                    self._count += 1
+                    nth = self._count
+                if nth == 1:
+                    # Hold the first request longer than the rest.
+                    time_module.sleep(0.15)
+                return FakeCompletion(GOOD_REPLY)
+
+        entries = [make_entry(f"phrase {i}", "phrase") for i in range(4)]
+        llm.complete_entries(
+            entries, client=SlowFirstClient(), model="m", workers=4
+        )
+        out = capsys.readouterr().out
+        positions = [out.index(f"[llm {i}/4]") for i in range(1, 5)]
+        assert positions == sorted(positions)
+        assert out.count(": ok") == 4
 
 
 class TestReasoningSuppression:

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -535,10 +535,16 @@ def complete_entries(
     resolves to the configured value) keeps the historical strictly sequential
     behaviour.  Above 1 the requests are issued by a thread pool — but only the
     *request and parse* half moves off the main thread: entries are updated and
-    messages are printed afterwards, in input order, on the calling thread.  No
-    worker touches a file, because ``lookup.write_json`` rewrites
+    messages are printed afterwards, on the calling thread.  No worker touches
+    a file, because ``lookup.write_json`` rewrites
     ``.words.json``/``.errors.json`` with a read-merge-write that would race if
     several threads ran it at once.
+
+    Every record is reported the moment its request settles, so a long run
+    shows progress instead of a silent pause followed by one burst of lines.
+    With several workers the completions arrive out of order; the lines are
+    still ordered by input position, because the ``ready`` buffer holds a
+    finished record until every earlier one has been reported.
 
     ``use_schema`` is retained for backward compatibility only.  Setting it to
     ``False`` starts the dialect walk at its terminal entry, i.e. sends no
@@ -620,17 +626,18 @@ def complete_entries(
                 reasoning.confirm()
                 return (index, entry, payload, "ok")
 
-    if workers <= 1:
-        results = [_one(index, entry) for index, entry in enumerate(targets, start=1)]
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            results = list(
-                pool.map(lambda pair: _one(*pair), enumerate(targets, start=1))
-            )
+    def _apply_result(
+        index: int,
+        entry: BoldEntry,
+        payload: dict | None,
+        status: str,
+    ) -> None:
+        """Fold one settled result into its entry and report it.
 
-    # Everything below runs on the calling thread, in input order.
-    results.sort(key=lambda item: item[0])
-    for index, entry, payload, status in results:
+        Called on the calling thread only, never from a worker: it is the one
+        place that mutates ``entry`` and the one place that prints, so the two
+        cannot interleave with another record's.
+        """
         if status == "ok":
             entry.entry = _to_standard_entry(entry, payload)
             entry.code = CODE_OK
@@ -644,6 +651,44 @@ def complete_entries(
         else:
             print(f"  [llm {index}/{total}] {entry.word!r}: failed ({status})")
             entry.detail = status
+
+    if workers <= 1:
+        # Sequential: report each record as soon as it settles.  This is the
+        # path that makes a single-worker run feel responsive.
+        for index, entry in enumerate(targets, start=1):
+            _apply_result(index, *_one(index, entry)[1:])
+    else:
+        # Concurrent: ``as_completed`` yields results in completion order,
+        # but the printed lines must stay in input order.  ``ready`` holds
+        # finished results until every earlier position has been reported;
+        # ``next_index`` is the position the next line must carry.
+        ready: dict[int, tuple[BoldEntry, dict | None, str]] = {}
+        next_index = 1
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(_one, index, entry): index
+                for index, entry in enumerate(targets, start=1)
+            }
+            for future in as_completed(futures):
+                index, entry, payload, status = future.result()
+                if index == next_index:
+                    # In order: emit immediately, then drain whatever the
+                    # buffer can now unblock.
+                    _apply_result(index, entry, payload, status)
+                    next_index += 1
+                    while next_index in ready:
+                        buffered_entry, buffered_payload, buffered_status = (
+                            ready.pop(next_index)
+                        )
+                        _apply_result(
+                            next_index,
+                            buffered_entry,
+                            buffered_payload,
+                            buffered_status,
+                        )
+                        next_index += 1
+                else:
+                    ready[index] = (entry, payload, status)
 
     if breaker.tripped:
         # Report once, on the calling thread, so the reason is not buried
