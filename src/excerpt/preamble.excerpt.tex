@@ -1,0 +1,119 @@
+%%=====================================================================
+%% preamble.excerpt.mw.tex
+%% Merriam-Webster 版词汇讲义专用导言区。
+%%
+%% 与 preamble.excerpt.tex（UApiPro 版）并列存在，互不影响。
+%% 差别只在数据来源带来的栏目变化：
+%%   * 没有「搭配」栏 —— MW 不提供搭配数据，故不再需要 \wcol；
+%%   * 新增 \wtag{标签}{内容}，用于词形变化 / 近义词 / 反义词 / 词源
+%%     这些「一条标签 + 一段内容」的附注行；
+%%   * 义项与例句的关系是 MW 数据自带的，所以 \wsense / \wex 的用法不变。
+%%
+%% 本文件刻意写成**自包含**的：不 \input 另一份导言区。
+%% 因为 TeX 的 \input 是相对编译目录解析的，而 main.tex 与导言区往往不在
+%% 同一层，静态文件里写死相对路径很容易在换目录后失效。
+%%
+%% 版式约定（每个词条）：
+%%   1. \whead{词}              词条标题
+%%   2. \wsent{…\wmark{词}…}    原文原句（加粗），标记词加下划线
+%%   3. \wsense{词性}{英文释义}  一个义项一行；词性标注保留
+%%        \wex{例句}            该义项自带的例证（不加粗）
+%%      \wtag{词形变化}{…}       附注行
+%%   4. \wblank                 非单词标记：释义处留空
+%%=====================================================================
+
+\usepackage[]{geometry}
+\geometry{a4paper,margin=0.7cm}
+\geometry{twoside, bindingoffset=1cm}
+\linespread{1.1}
+\usepackage[UTF8]{ctex}
+\usepackage{fontspec}
+\usepackage{xcolor}
+% ulem 的 \uline 可以在行尾断开；normalem 保留 \emph 原本的斜体语义
+\usepackage[normalem]{ulem}
+\usepackage{hyperref}
+
+%%-------------------------------------------------- 字体
+\setmainfont{Times New Roman}
+\setsansfont{Arial}
+\setmonofont{Courier New}
+\setCJKmainfont{SimSun}[AutoFakeBold=2.0]
+\setCJKsansfont{SimHei}
+\pagestyle{plain}
+
+%%-------------------------------------------------- 配色
+\definecolor{wInk}{RGB}{40, 40, 40}
+\definecolor{wHead}{RGB}{24, 74, 122}
+\definecolor{wPos}{RGB}{133, 79, 20}
+\definecolor{wDef}{RGB}{53, 94, 59}
+\definecolor{wRule}{RGB}{100, 100, 100}
+
+%%-------------------------------------------------- 排版参数
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+% 例句 / 附注行的统一缩进宽度
+\newlength{\wIndent}
+\setlength{\wIndent}{1.2em}
+% 相邻词条之间的间距（拉开相邻的标记词）
+\newlength{\wEntryGap}
+\setlength{\wEntryGap}{1.6em}
+
+%%-------------------------------------------------- 词条之间的间距
+\newcommand{\wgap}{\par\vspace{\wEntryGap}}
+
+%%-------------------------------------------------- 词条标题
+% \whead{abandon}
+\newcommand{\whead}[1]{%
+  \wgap
+  {\color{wHead}\bfseries\large #1}%
+  \par\nopagebreak\smallskip
+}
+
+%%-------------------------------------------------- 原文原句（置顶，加粗）
+% \wsent{The committee decided to \wmark{abandon} the proposal.}
+\newcommand{\wsent}[1]{%
+  \par\nopagebreak
+  {\bfseries #1}%
+  \par\nopagebreak
+  %\vspace{1.2pt}%
+  %{\color{wRule}\hrule height 0.6pt}%
+  %\par\nopagebreak\vspace{4pt}%
+}
+
+%%-------------------------------------------------- 标记词：下划线
+% 用 \uline 而非 \underline：整句被标记时也能正常断行
+\newcommand{\wmark}[1]{\uline{#1}}
+
+%%-------------------------------------------------- 义项：词性 + 英文释义
+% 一个义项写一条。MW 的义项自带例证，紧随其后的 \wex 即属于该义项。
+% \wsense{verb}{to give up completely}
+\newcommand{\wsense}[2]{%
+  \par\nopagebreak\smallskip
+  {\color{wPos}\bfseries [#1]}\ {\color{wDef}#2}%
+  \par\nopagebreak
+}
+
+%%-------------------------------------------------- 例句（不加粗）
+% \wex{They abandoned the ship.}
+\newcommand{\wex}[1]{%
+  \par\nopagebreak
+  \hspace*{\wIndent}#1%
+  \par\nopagebreak
+}
+
+%%-------------------------------------------------- 附注行：标签 + 内容
+% 用于词形变化 / 近义词 / 反义词 / 词源 / 首次使用。
+% \wtag{词形变化}{past tense: abandoned}
+\newcommand{\wtag}[2]{%
+  \par\nopagebreak\smallskip
+  \hspace*{\wIndent}{\color{wPos}\bfseries #1:\,}\ {\color{wInk}#2}%
+  \par\nopagebreak
+}
+
+%%-------------------------------------------------- 非单词标记：留空
+% 加粗的若不是单个单词（短语、整句等），其释义处留白，供自行补注。
+\newcommand{\wblank}{%
+  \par\nopagebreak
+  \hspace*{\wIndent}\rule{0pt}{2.6em}%
+  \par\nopagebreak
+}

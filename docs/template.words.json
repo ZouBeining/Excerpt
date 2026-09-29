@@ -1,0 +1,135 @@
+[
+  {
+    "word": "director",
+    "type": "word",
+    "sentence": "Tushman, the middle-school **director**.",
+    "line": 8,
+    "code": 0,
+    "detail": "",
+    "source": "cache",
+    "dict": "mw",
+    "entry": {
+      "word": "director",
+      "language": "en",
+      "dictionary": "collegiate",
+      "homograph": 0,
+      "section": "alpha",
+      "offensive": false,
+      "pos": "noun",
+      "labels": [],
+      "subjectLabels": [],
+      "pronunciations": [
+        {
+          "mw": "də-ˈrek-tər",
+          "audio": "https://media.merriam-webster.com/audio/prons/en/us/mp3/d/direct12.mp3"
+        },
+        {
+          "mw": "dī-",
+          "audio": ""
+        }
+      ],
+      "senses": [
+        {
+          "pos": "noun",
+          "definition": "the head of an organized group or administrative unit (such as a bureau or school)",
+          "examples": [
+            "director of religious education",
+            "a communications director"
+          ]
+        },
+        {
+          "pos": "noun",
+          "definition": "one of a group of persons entrusted with the overall direction of a corporate enterprise",
+          "examples": [
+            "on the board of directors for a large corporation"
+          ]
+        },
+        {
+          "pos": "noun",
+          "definition": "a person who supervises the production of a show (as for stage or screen) usually with responsibility for action, lighting, music, and rehearsals",
+          "examples": [
+            "a famous Hollywood director"
+          ]
+        }
+      ],
+      "shortDefs": [
+        "one who directs: such as",
+        "the head of an organized group or administrative unit (such as a bureau or school)",
+        "one of a group of persons entrusted with the overall direction of a corporate enterprise"
+      ],
+      "inflections": [],
+      "synonyms": [],
+      "antonyms": [],
+      "etymology": "see direct",
+      "firstUse": "15th century",
+      "stems": [
+        "director",
+        "directors",
+        "directorship",
+        "directorships"
+      ],
+      "homographs": 1,
+      "relatedHeadwords": [
+        "director's chair",
+        "director's cut",
+        "director of photography",
+        "casting director",
+        "funeral director",
+        "program director",
+        "stage director",
+        "managing director",
+        "codirect"
+      ]
+    },
+    "is_lemma": false,
+    "lemma_from": ""
+  },
+  {
+    "word": "returning your call",
+    "type": "phrase",
+    "sentence": "This is Amanda Will, **returning your call**?",
+    "line": 10,
+    "code": 0,
+    "detail": "",
+    "source": "llm",
+    "dict": "mw",
+    "entry": {
+      "word": "returning your call",
+      "language": "en",
+      "dictionary": "ai",
+      "homograph": 0,
+      "section": "alpha",
+      "offensive": false,
+      "pos": "phrase",
+      "labels": [],
+      "subjectLabels": [],
+      "pronunciations": [],
+      "senses": [
+        {
+          "pos": "phrase",
+          "definition": "used to identify oneself when calling someone back after they have called you; calling someone in response to their earlier call",
+          "examples": [
+            "This is Amanda Will, returning your call.",
+            "I'm returning your call from yesterday."
+          ]
+        }
+      ],
+      "shortDefs": [
+        "calling someone back in response to their earlier call"
+      ],
+      "inflections": [],
+      "synonyms": [
+        "calling back",
+        "phoning back"
+      ],
+      "antonyms": [],
+      "etymology": "",
+      "firstUse": "",
+      "stems": [],
+      "homographs": 0,
+      "relatedHeadwords": []
+    },
+    "is_lemma": false,
+    "lemma_from": ""
+  }
+]

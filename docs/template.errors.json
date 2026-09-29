@@ -1,0 +1,27 @@
+{
+  "total": 2,
+  "retriable": 0,
+  "dict_api_key_problems": 0,
+  "errors": [
+    {
+      "id": "uuid",
+      "word": "give up",
+      "type": "phrase",
+      "source": "extractor",
+      "code": 1001,
+      "reason": "NOT_A_SINGLE_WORD",
+      "status": "pending",
+      "time": "2026-09-28T22:03:00+08:00"
+    },
+    {
+      "id": "uuid",
+      "word": "obfuscate",
+      "type": "word",
+      "source": "lookup",
+      "code": 1003,
+      "reason": "WORD_NOT_FOUND",
+      "status": "pending",
+      "time": "2026-09-28T22:19:00+08:00"
+    }
+  ]
+}

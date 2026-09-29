@@ -1,0 +1,613 @@
+{
+  "_comment": "Merriam-Webster Dictionary API —— JSON 返回格式参考 / 模板。依据官方文档 https://dictionaryapi.com/products/json 整理。约定：以尖括号开头、形如 \"<type> 说明\" 的字符串是「占位符」，标明该位置的 JSON 类型与含义；以 \"_\" 开头的键是注释，不属于真实返回内容；其余键值均为真实字段名，示例值取自官方文档。",
+  "_source_page": "https://dictionaryapi.com/products/json",
+
+  "api": {
+    "product": "Merriam-Webster Dictionary API",
+    "reference_guide": "官方以《Collegiate（大学词典）》为所有数据集的结构母本；本文档第 2 节即为其完整结构，其他数据集共用其中大部分字段。",
+    "request": {
+      "method": "GET",
+      "url_template": "https://dictionaryapi.com/api/v3/references/{reference}/json/{word}?key={API_KEY}",
+      "path_params": {
+        "reference": "数据集名：collegiate / thesaurus / learners / elementary / medical / spanish",
+        "word": "要查询的词，需 URL 编码"
+      },
+      "query_params": {
+        "key": "开发者密钥（必需）"
+      }
+    },
+    "audio_url_template": "https://media.merriam-webster.com/audio/prons/en/us/mp3/{folder}/{audio}.mp3",
+    "audio_folder_rule": [
+      "audio 以 \"bix\" 开头 → folder = \"bix\"",
+      "audio 以 \"gg\" 开头 → folder = \"gg\"",
+      "audio 首字符不是字母（典型为数字）→ folder = \"number\"",
+      "其他情况 → folder = audio 的首字符"
+    ],
+    "entry_id_rule": "meta.id 由词头构成；同形异义词追加 \":\" + 同形词序号（如 \"battle:2\"）；交叉引用的目标即此 id。"
+  },
+
+  "response_shapes": {
+    "_note": "顶层返回类型共有三种，判定时必须先看 Content-Type，再看正文，不能只看 HTTP 状态码。",
+    "found": {
+      "http_status": 200,
+      "content_type": "application/json",
+      "body": "<array> 词条对象数组；每个元素是一个词条（结构见 entry_template）。一个词条对应一个同形异义项。"
+    },
+    "not_found": {
+      "http_status": 200,
+      "content_type": "application/json",
+      "body": "<array<string>> 仍是数组，但元素是字符串——拼写建议，而非词条对象。判定：typeof body[0] === \"string\"。"
+    },
+    "invalid_key_or_missing_key": {
+      "http_status": 200,
+      "content_type": "text/plain",
+      "body": "<string> 纯文本错误信息，如 \"Invalid API key. Not subscribed for this reference.\" 或 \"Key is required.\""
+    }
+  },
+
+  "entry_template": [
+    {
+      "_note": "一个词典词条（dictionary entry）。顶层字段的排列顺序即真实响应中的顺序，仅供参照，解析时不应依赖顺序。",
+
+      "meta": {
+        "_doc": "词条的「元数据」（关于词条本身的信息，而非词条内容）。位于词条最开头，不用于展示。",
+        "id": "<string> 词条在本数据集内的唯一 ID，交叉引用时用它定位；由 headword 构成，同形异义词追加 \":\"+序号，如 \"battle:2\"",
+        "uuid": "<string> 全局唯一标识符（UUID）",
+        "sort": "<string> 9 位数字排序码，需要按词典顺序排列词条时使用，如 \"020100000\"",
+        "src": "<string> 来源数据集，如 \"collegiate\"（官方说明：可忽略）",
+        "section": "<string> 词条在纸质词典中的板块：\"alpha\" 主字母序 / \"biog\" 传记 / \"geog\" 地名 / \"idioms\" 习语 / \"fw&p\" 外来词与短语",
+        "stems": [
+          "<array<string>> 该词条下全部词头、异体、屈折形式、未定义 run-on 词与已定义 run-on 短语；每个元素都是能命中该词条的合法检索词",
+          "batteler",
+          "battle",
+          "battle it out",
+          "battles"
+        ],
+        "offensive": "<boolean> 词条内存在含 \"offensive\" 的标签时为 true，否则 false",
+        "target": {
+          "_when": "仅当本条是「从其他数据集跳转而来」的交叉引用目标时出现（例如 Thesaurus 词条指向 Collegiate 词条）",
+          "tuuid": "<string> 目标词条的 uuid",
+          "tsrc": "<string> 目标词条的来源数据集，如 \"collegiate\""
+        },
+        "lang": "<string> ISO 639-1 语言码，\"en\" 或 \"es\"",
+        "highlight": "<string> 仅学习词典：为 \"yes\" 时表示该词头是英语核心词汇",
+        "app-shortdef": {
+          "_when": "仅学习词典（Advanced Learner's）。是一个用于缩短视图的迷你词条。",
+          "hw": "<string> 词头",
+          "fl": "<string> 词性",
+          "def": ["<array<string>> 前三个义项的定义文本（其中仍可能含 {bc} 等排版标记）"]
+        },
+        "syns": [
+          ["<array<string>> 仅 Thesaurus：该词头的近义词组（按组给，组内为词）", "aloft", "over", "overhead"]
+        ],
+        "ants": [
+          ["<array<string>> 仅 Thesaurus：该词头的反义词组", "below", "beneath", "under"]
+        ]
+      },
+
+      "hom": "<number> 同形异义词序号（homograph）。出现时，紧邻的前/后词条会有相同的 hwi.hw。展示为词头右上角上标；该序号也已并入 meta.id 以保证唯一。",
+
+      "hwi": {
+        "_doc": "词头信息（headword information）。词条顶级成员，必需。",
+        "hw": "<string> 词头（必需）。其中 \"*\" 是音节分隔符，展示时应删除；可能含 {bit} 等排版标记",
+        "prs": [
+          {
+            "_cardinality": "0..n 个发音对象；亦可出现在 ahws / cats / dros / hwi / ins / ri / sdsense / sen / sense / uros / vrs 中",
+            "mw": "<string> 用 MW 音标体系书写的读音，如 \"kī-ˈō-tē\"",
+            "l": "<string> 读音「之前」的标签，如 \"also\"",
+            "l2": "<string> 读音「之后」的标签，如 \"or\"",
+            "pun": "<string> 用于分隔多个读音对象的标点，如 \",\" 或 \";\"",
+            "ipa": "<string> 国际音标（IPA）读音；部分词典使用。展示时整组读音应包在斜杠 \"//\" 中",
+            "wod": "<string> MW「每日一词」式的简化读音",
+            "sound": {
+              "_doc": "音频播放信息",
+              "audio": "<string> 音频文件名（不含扩展名），如 \"coyote01\"",
+              "ref": "<string> 音频来源标记，如 \"c\"",
+              "stat": "<string> 音频状态标记，如 \"1\""
+            }
+          }
+        ],
+        "psl": "<string> 词头级的括注 主题/语域 标签，如 \"chiefly US\"",
+        "altprs": {
+          "_when": "仅学习词典：另一种发音写法",
+          "pr": "<object> 发音对象，成员同 prs 中的发音对象"
+        }
+      },
+
+      "ahws": [
+        {
+          "_cardinality": "0..n 个异体词头对象。条目中第一个 hw 一定位于 hwi；ahws 多出现在「短交叉引用词条」中。",
+          "hw": "<string> 异体词头（必需）",
+          "prs": [],
+          "psl": "<string> 括注主题/语域标签",
+          "hwc": "<string> 仅西英词典：词头截断标记（cutback），如 \"-da\""
+        }
+      ],
+
+      "vrs": [
+        {
+          "_cardinality": "0..n 个异体对象；亦可出现在 dros / ri / sdsense / sen / sense / uros 中",
+          "va": "<string> 异体拼写（必需），如 \"kab*ba*la\"",
+          "vl": "<string> 异体标签，如 \"or\" / \"or less commonly\" / \"or chiefly British\"",
+          "prs": [],
+          "spl": "<string> 单复数标签",
+          "vac": "<string> 仅西英词典：异体截断标记"
+        }
+      ],
+
+      "fl": "<string> 词性／功能标签（functional label）：\"noun\" / \"verb\" / \"adjective\" / \"plural noun\" 等，也可能是 \"trademark\" / \"abbreviation\"。描述紧随其前 hwi 中的 hw。",
+
+      "lbs": ["<array<string>> 通用标签，如 \"often capitalized\" / \"often attributive\"。可出现在词条顶级，也可出现在 dros / sdsense / sen / sense / uros 中"],
+
+      "sls": ["<array<string>> 主题／语域标签，如 \"chiefly British\" / \"sometimes offensive\"。可出现在词条顶级，也可出现在 def / dros / sdsense / sen / sense / uros 中"],
+
+      "psl": "<string> 括注的主题／语域标签。可出现在 ahws / cats / dros / hwi / vis / uros 中",
+
+      "ins": [
+        {
+          "_cardinality": "0..n 个屈折（inflection）对象；亦可出现在 sdsense / sen / sense / uros 中",
+          "if": "<string> 屈折形式（inflected form），如 \"aban*doned\"（* 为音节分隔符）",
+          "ifc": "<string> 屈折形式的截断写法，如 \"-seled\"",
+          "il": "<string> 屈折标签（inflection label），如 \"or\" / \"plural\"",
+          "prs": [],
+          "spl": "<string> 义项级单复数标签，如 \"singular in construction\"",
+          "aif": {
+            "_when": "仅西英词典：另一种屈折形式",
+            "if": "<string> 屈折形式",
+            "ifc": "<string> 屈折形式的截断写法"
+          }
+        }
+      ],
+
+      "cxs": [
+        {
+          "_cardinality": "0..n 个同源交叉引用（cognate cross-reference）对象。词条顶级成员。",
+          "cxl": "<string> 同源标签，如 \"less common spelling of\"",
+          "cxtis": [
+            {
+              "cxt": "<string> 显示文本（超链接文字）",
+              "cxr": "<string> 交叉引用目标 id（存在时用它作目标）",
+              "cxn": "<string> 义项号"
+            }
+          ]
+        }
+      ],
+
+      "def": [
+        {
+          "_doc": "定义区（definition section），词条顶级成员；也用 dros 中的已定义 run-on。每个 def 元素可含一个可选的 vd 与必需的 sseq。",
+          "vd": "<string> 动词分隔标签，如 \"transitive verb\" / \"intransitive verb\"（仅动词词条，出现在 sseq 之前）",
+          "sseq": [
+            [
+              [
+                "sense",
+                {
+                  "sn": "<string> 义项号，如 \"1 a\" / \"b\" / \"(1)\"",
+                  "dt": [
+                    ["text", "<string> 定义文本；含 {bc} 加粗冒号、{a_link|backward} 等交叉引用标记"],
+                    ["vis", ["<array> 语言例证：对象含 t（例证文本，必需），可选 aq 出处"]]
+                  ]
+                }
+              ],
+              [
+                "sense",
+                {
+                  "sn": "<string> 义项号",
+                  "sdsense": {
+                    "sd": "<string> 义项分隔词（sense divider，必需），如 \"also\" / \"specifically\" / \"especially\"",
+                    "dt": []
+                  }
+                }
+              ]
+            ],
+            [
+              [
+                "sense",
+                {
+                  "sn": "<string> 义项号",
+                  "dt": [
+                    ["text", "<string> 定义文本"]
+                  ]
+                }
+              ]
+            ]
+          ]
+        }
+      ],
+
+      "_sseq_structure": {
+        "_doc": "sseq（义项序列）是理解整个响应结构的关键，故单独说明其嵌套。",
+        "shape": "sseq 是 array，其每个元素是一条「义项序列」；每条序列又是 array，元素为二元数组 [<标记>, <负载>]。",
+        "element_tags": {
+          "sense": "<object> 一个义项，负载见 sense_template",
+          "sen": "<object> 截断义项（truncated sense），用于从既有义项续接，如 {\"sn\":\"4\",\"et\":[[\"text\",\"by shortening\"]]}",
+          "bs": "<object> 绑定替代（binding substitute），负载形如 {\"sense\": {...}}，用于引出其后的细分义项",
+          "pseq": "<array> 括注义项序列（parenthesized sense sequence），用于 (1)(2) 这类细分"
+        }
+      },
+
+      "sense_template": {
+        "_doc": "义项（sense）负载对象可含的成员；出现位置：sseq / pseq / bs 之内。",
+        "sn": "<string> 义项号（sense number），出现在 sense 或 sen 内",
+        "sgram": "<string> 义项级语法标签，如 \"T/I\"（及物/不及物）、\"I\"",
+        "spl": "<string> 义项级单复数标签，仅出现在 ins 内",
+        "sls": ["<array<string>> 义项级主题／语域标签"],
+        "lbs": ["<array<string>> 义项级通用标签"],
+        "psl": "<string> 义项级括注标签",
+        "vrs": [],
+        "ins": [],
+        "et": [],
+        "dt": ["<array> 义项定义文本（defining text），由若干 [<标记>, <值>] 组成；标记可为 text / vis / uns / snote / ca / ri / bnw / dx... "],
+        "sdsense": "<object> 分裂义项（divided sense），必跟在 dt 之后",
+        "bnote": "<string> 仅学习词典：粗斜体注释（bold-italic note）",
+        "gram": "<string> 仅学习词典：语法注释（grammatical note）",
+        "wsgram": ["<string> 仅学习词典：义项内语法标签，如 \"plural\" / \"singular\""],
+        "snotebox": "<object> 仅学习词典：方框补充说明",
+        "phrasev": "<object> 仅学习词典：短语动词，含 phr",
+        "sphrasev": "<object> 仅学习词典：短语动词（序列式），含 phrs",
+        "syns": ["<array> 近义词辨析段（synonym discussion），含 pl（段落标签）与 pt（段落文本）"],
+        "uros": [],
+        "dxnls": [],
+        "usages": [],
+        "quotes": []
+      },
+
+      "dt": {
+        "_doc": "定义文本（defining text）：array of [<标记>, <负载>]。标记与负载取值如下。",
+        "text": "<string> 普通定义文本，含排版与交叉引用 token",
+        "vis": "<array> 语言例证（verbal illustration），元素为 {\"t\": \"<string> 例证文本\", \"aq\": {...} 出处（可选）}",
+        "uns": "<array> 用法说明（usage notes），结构同 dt",
+        "snote": "<array> 补充说明（supplemental information note），结构同 dt",
+        "ca": "<array> 又称注释（called-also note），负载见下方 ca 模板",
+        "ri": "<array> 行内插入（run-in），负载为若干 [<标记>, <值>]（如 riw）",
+        "bnw": "<array> 传记名包裹（biographical name wrap），负载见下方 bnw 模板",
+        "g": "<string> 地理方位标记（geographical direction），如 \"NW\" / \"W\"。出现在 dt / dt_dig / ri / uns 中",
+        "dx / dx_def / dx_ety / ma": "<string> 交叉引用分组 token（含成对的 {/...}）",
+        "sx / dxt / a_link / d_link / i_link / mat": "<string> 交叉引用 token",
+        "gl": "<string> 仅西英词典：性别标注（gender label），如 \"masculine\" / \"feminine\"",
+        "gwds": "<object> 仅西英词典：性别形式（gender forms），含 gwc（截断）与 gwd（文本）",
+        "vimw": "<object> 仅《Elementary Dictionary》：M-W 语言例证，含 t",
+        "hint": "<array> 仅《Elementary Dictionary》：行内提示，结构同 dt"
+      },
+
+      "bnw": {
+        "_doc": "传记名包裹（biographical name wrap）：出现在 dt 中，形式为 [\"bnw\", {<负载>}]。渲染时行内显示，其后紧跟「逗号+空格」。",
+        "pname": "<string> personal/first name，名。正体显示",
+        "sname": "<string> surname，姓。正体显示",
+        "altname": "<string> 别名，如笔名、绰号、头衔等。斜体显示",
+        "prs": ["<array> 该名字的发音"]
+      },
+
+      "ca": {
+        "_doc": "又称注释（called-also note）：出现在 dt 中，形式为 [\"ca\", {<负载>}]。渲染时前面加「破折号+空格」；intro 正体，cat 斜体，pn 括注。",
+        "intro": "<string> 引导语，通常为 \"called also\"",
+        "cats": [
+          {
+            "_cardinality": "1..n 个又称词对象",
+            "cat": "<string> 又称词（called-also term），斜体显示",
+            "catref": "<string> 又称词的交叉引用目标 id；存在时可据此生成超链接",
+            "pn": "<string> 括注（parenthesized note），渲染在圆括号内"
+          }
+        ]
+      },
+
+      "sdsense": {
+        "_doc": "分裂义项（divided sense）：位于 sense 内、且必定紧跟在 dt 之后。",
+        "sd": "<string> 义项分隔词（必需），如 \"also\" / \"specifically\" / \"especially\"",
+        "dt": []
+      },
+
+      "uros": [
+        {
+          "_doc": "未定义 run-on（undefined run-on）：词条顶级成员，出现时紧跟在顶级的 def 之后。",
+          "ure": "<string> 未定义 run-on 词条词（undefined run-on entry word）",
+          "prs": [],
+          "fl": "<string> 词性",
+          "gram": "<string> 仅学习词典：语法注释",
+          "rsl": "<string> 仅学习词典：run-on 主题／语域标签",
+          "utxt": "<array> 未定义 run-on 文本（结构同 dt）",
+          "aure": {
+            "_when": "仅西英词典：另一种未定义词条词",
+            "urec": "<string> 截断写法",
+            "ure": "<string> 文本"
+          }
+        }
+      ],
+
+      "dros": [
+        {
+          "_doc": "已定义 run-on（defined run-on）：词条顶级成员，位于 uros（若有）之后、否则在 def 之后。每个含 drp + 自己的 def，另可有发音、标签、异体、词源。",
+          "drp": "<string> 已定义 run-on 短语（defined run-on phrase），如 \"abide by\"",
+          "gram": "<string> 仅学习词典：语法注释，如 \"phrasal verb\"",
+          "rsl": "<string> 仅学习词典：run-on 主题／语域标签，如 \"US\"",
+          "vrs": [],
+          "prs": [],
+          "fl": "<string> 词性",
+          "lbs": [],
+          "sls": [],
+          "ins": [],
+          "et": [],
+          "def": []
+        }
+      ],
+
+      "dxnls": ["<array<string>> 定向交叉引用区（directional cross-reference section），词条顶级，靠近词条末尾。元素为含 {dxt|acadian||} 等 token 的字符串"],
+
+      "usages": [
+        {
+          "_doc": "用法段（usage section）：词条顶级，靠近词条末尾。",
+          "pl": "<string> 段落标签（paragraph label）",
+          "pt": ["<array> 段落文本（paragraph text），结构同 dt"],
+          "uarefs": {
+            "uaref": "<string> 用法参见（usage see-in）目标"
+          }
+        }
+      ],
+
+      "syns": [
+        {
+          "_doc": "近义词辨析段（synonyms section）：词条顶级，靠近词条末尾。",
+          "pl": "<string> 段落标签",
+          "pt": ["<array> 段落文本"],
+          "sarefs": ["<array<string>> 参见（see-in）目标，如 \"assent\""]
+        }
+      ],
+
+      "quotes": [
+        {
+          "_doc": "引文段（quotations section）：词条顶级，靠近词条末尾。",
+          "t": "<string> 引文文本（必需），含 {qword}…{/qword} 标记",
+          "aq": {
+            "auth": "<string> 作者",
+            "source": "<string> 出处作品",
+            "aqdate": "<string> 出版日期",
+            "subsource": {
+              "_when": "可选，出处作品的更上层来源",
+              "source": "<string> 来源作品",
+              "aqdate": "<string> 日期"
+            }
+          }
+        }
+      ],
+
+      "art": {
+        "_doc": "插图（artwork）：词条顶级，靠近词条末尾。",
+        "artid": "<string> 目标图片文件名",
+        "capt": "<string> 图片题注文本"
+      },
+
+      "table": {
+        "_doc": "表格（table）：词条顶级，靠近词条末尾。",
+        "tableid": "<string> 目标表格 ID",
+        "displayname": "<string> 表格链接的显示文本"
+      },
+
+      "et": ["<array> 词源（etymology）：词条顶级，也可位于 dros / sdsense / sen / sense。由若干 [<标记>, <值>] 组成，典型为 [\"text\", \"...\"]，内部可含 {ma}{mat|fly|}{/ma}"],
+
+      "date": "<string> 首次已知使用时间（first known use），词条顶级。如 \"circa 1842\" / \"before 12th century{ds|t|1|a|1}\"",
+
+      "shortdef": ["<array<string>> 简短释义（short definition）：词条顶级，位于词条最末尾。仅取前三个义项的定义文本，用于预览/精简视图，不与完整词条同时展示"],
+
+      "list": ["<array<string>> 自解释列表（self-explanatory list），如以 over- 为前缀的词表"],
+
+      "suppl": {
+        "_doc": "补充信息（supplementary information）：仅西英词典，词条顶级，靠近末尾。",
+        "cjts": [
+          {
+            "cjid": "<string> 变位类别 ID，如 \"gppt\"（现在分词）、\"pind\"（陈述式现在时）等",
+            "cjfs": ["<array<string>> 各人称的变位形式；\"-\" 表示该格不存在"]
+          }
+        ]
+      },
+
+      "bios": [
+        [
+          ["bionw", { "biosname": "<string> 传记词条词", "prs": [] }],
+          ["bionw", { "biopname": "<string> 传记人称名" }],
+          ["biodate", "<string> 生卒年，如 \"(1874–1950)\""],
+          ["biotx", "<string> 传记正文"]
+        ]
+      ],
+
+      "artl": {
+        "_doc": "仅学习词典：插图（Learner's Dictionary artwork），词条顶级，靠近末尾。",
+        "art": {
+          "artid": "<string> 目标图片文件名（含扩展名，需去除）",
+          "capt": "<string> 图片题注文本",
+          "dim": "<string> 图片尺寸，如 \"394,201\""
+        }
+      },
+
+      "hintp": {
+        "_doc": "仅《Elementary Dictionary》：提示段（Hint Paragraph），词条顶级，靠近末尾。",
+        "pl": "<string> 段落标签，如 \"Hint\"",
+        "pt": []
+      },
+
+      "hs": {
+        "_doc": "仅《Elementary Dictionary》：Headscratcher 段，词条顶级，靠近末尾。",
+        "pl": "<string> 段落标签，如 \"Headscratcher\"",
+        "pt": []
+      },
+
+      "rootpara": {
+        "_doc": "仅《Elementary Dictionary》：词根段（Word Root Paragraph），词条顶级，靠近末尾。",
+        "pl": "<string> 段落标签，如 \"Root\"",
+        "pt": []
+      },
+
+      "history": {
+        "_doc": "仅《Elementary Dictionary》：词史段（Word History Paragraph），词条顶级，靠近末尾。",
+        "pl": "<string> 段落标签，如 \"Word History\"",
+        "pt": []
+      },
+
+      "xrs": {
+        "_doc": "仅西英词典：交叉引用（cross-references），可位于 sen / sense 或词条顶级。",
+        "xrtis": {
+          "xrti": {
+            "xrt": "<string> 交叉引用显示文本",
+            "xref": "<string> 交叉引用目标 id"
+          }
+        }
+      },
+
+      "snotebox": [
+        ["t", "<string> 方框内文字"],
+        ["vis", ["<array> 语言例证"]]
+      ]
+    }
+  ],
+
+  "other_references": {
+    "_note": "以下为《Collegiate》之外的各数据集所「额外」或「独有」的成员；它们同样共用 entry_template 中已列出的全部通用字段。",
+
+    "collegiate_thesaurus": {
+      "_doc": "默认为 Thesaurus 数据集（reference = thesaurus，src 常为 \"coll_thes\"）。meta 额外带 syns/ants 与 target；词义部分改用下列词表。",
+      "word_list_members": {
+        "_where": "出现在 sense 内",
+        "syn_list": {
+          "_doc": "近义词列表：外层每组一组近义词（array<array<object>>），组内每项形如 {\"wd\": \"blithe\"}",
+          "_example": [
+            [
+              { "wd": "blithe" },
+              { "wd": "blithesome" },
+              { "wd": "categorical", "wvrs": [{ "wvl": "also", "wva": "categoric" }] },
+              { "wd": "blooming", "wsls": { "wsl": "chiefly British" } }
+            ]
+          ]
+        },
+        "sim_list": ["<array<array<object>>> 近义词与近似词列表"],
+        "rel_list": ["<array<array<object>>> 相关词列表，如 compare / equate / liken"],
+        "phrase_list": ["<array<array<object>>> 同义短语列表，如 \"be friends with\""],
+        "near_list": ["<array<array<object>>> 近反义词列表"],
+        "ant_list": ["<array<array<object>>> 反义词列表"],
+        "opp_list": ["<array<array<object>>> 反义词与近反义词列表"]
+      },
+      "word_item_members": {
+        "wd": "<string> 该词（必需），如 \"blithe\"",
+        "wsls": { "wsl": "<string> 该词的主题／语域标签" },
+        "wvrs": [{ "wvl": "<string> 异体标签，如 \"also\"", "wva": "<string> 异体词形" }],
+        "wvbvrs": [{ "wvbvl": "<string> 动词异体标签", "wvbva": "<string> 动词异体词形" }]
+      },
+      "additional_members": {
+        "srefs": ["<array<string>> 同义词参见（synonym see-in）目标，如 \"old:1\""],
+        "urefs": ["<array<string>> 用法参见（usage see-in）目标"]
+      }
+    },
+
+    "learners": {
+      "_doc": "《Advanced Learner's English Dictionary》（reference = learners）。",
+      "meta": {
+        "highlight": "<string> \"yes\" 表示核心词汇",
+        "app-shortdef": "<object> 精简词条：hw + fl + def[]"
+      },
+      "altprs": {
+        "_where": "出现在 hwi / ins / uros / vrs 中",
+        "pr": "<object> 发音对象（成员同 prs 的发音对象），如 {\"ipa\": \"ˈbælətɪŋ\"}"
+      },
+      "gram": "<string> 语法注释，词条顶级或出现在 dros / uros 中，如 \"count\"",
+      "wsgram": ["<string> 义项内语法标签，出现在 dt 中、紧接 snote/uns/vis 之前，如 \"plural\" / \"singular\""],
+      "bnote": "<string> 粗斜体注释，出现在 sen / sense 中，如 \"the action\"",
+      "snotebox": "<array> 方框补充说明，出现在 sense / utxt 中，由 [\"t\", ...] 与 [\"vis\", [...]] 交替组成",
+      "phrasev": {
+        "_where": "出现在 sen / sense / dros 内的 vg 中；总是跟在 sn 之后",
+        "phr": {
+          "pva": "<string> 短语动词（phrasal verb）",
+          "pvl": "<string> 短语动词标签，如 \"or\""
+        }
+      },
+      "sphrasev": {
+        "_where": "同上",
+        "phrs": [{ "pva": "<string> 短语动词", "pvl": "<string> 标签" }],
+        "phsls": ["<array<string>> 短语动词的主题／语域标签，如 \"Brit\" / \"informal\""]
+      },
+      "rsl": "<string> run-on 的主题／语域标签，出现在 dros / uros 中，如 \"US\"",
+      "artl": "<object> 插图，词条顶级靠近末尾（见 entry_template.artl）"
+    },
+
+    "elementary": {
+      "_doc": "《Elementary Dictionary》（reference = elementary）。除通用字段外增加：",
+      "vimw": { "_where": "出现在 dt / hint / un / uro 中", "t": "<string> M-W 语言例证文本" },
+      "hint": ["<array> 行内提示，出现在 dt 中，结构同 dt"],
+      "hintp": { "pl": "<string> 段落标签 \"Hint\"", "pt": [] },
+      "hs": { "pl": "<string> 段落标签 \"Headscratcher\"", "pt": [] },
+      "rootpara": { "pl": "<string> 段落标签 \"Root\"", "pt": [] },
+      "history": { "pl": "<string> 段落标签 \"Word History\"", "pt": [] }
+    },
+
+    "medical": {
+      "_doc": "《Medical Dictionary》（reference = medical）。",
+      "bios": ["<array> 传记注（biographical notes），词条顶级。每项由 [\"bionw\", {...}]、[\"biodate\", \"...\"]、[\"biotx\", \"...\"] 组成"],
+      "bios_name_members": {
+        "biosname": "<string> 传记词条词",
+        "biopname": "<string> 传记人称名",
+        "bioname": "<string> 其他传记名",
+        "prs": []
+      }
+    },
+
+    "spanish": {
+      "_doc": "《Spanish-English Dictionary》（reference = spanish）。",
+      "lang": "<string> 仅出现在 meta 中：ISO 639-1 语言码，\"en\" 或 \"es\"",
+      "hwc": "<string> 词头截断（headword cutback），出现在 ahws 中，如 \"-da\"",
+      "vac": "<string> 异体截断（variant cutback），出现在 vrs 中",
+      "aif": { "if": "<string> 屈折形式", "ifc": "<string> 截断写法" },
+      "xrs": { "xrtis": { "xrti": { "xrt": "<string> 文本", "xref": "<string> 目标 id" } } },
+      "gl": "<string> 性别标注，出现在 dt 中，如 \"masculine\" / \"feminine\"",
+      "gwds": { "gwc": "<string> 截断", "gwd": "<string> 文本" },
+      "tr": "<string> 语言例证译文，出现在 vis 中，如 {\"t\": \"sin rodeos\", \"tr\": \"without reservations\"}",
+      "aure": { "urec": "<string> 截断", "ure": "<string> 文本" },
+      "suppl": {
+        "_doc": "词条顶级靠近末尾，动词变位表",
+        "cjts": [{ "cjid": "<string> 变位类别 ID，如 \"pind\"", "cjfs": ["<array<string>> 各人称形式，\"-\" 表示缺格"] }]
+      }
+    }
+  },
+
+  "running_text_tokens": {
+    "_doc": "字符串类字段（最常见于 dt / t / text）里夹带的花括号标记，渲染前必须处理；成对标记形如 {x}…{/x}。",
+    "formatting_and_punctuation": {
+      "{b}…{/b}": "加粗",
+      "{bc}": "输出一个「加粗冒号 + 空格」（定义前那个冒号）",
+      "{inf}…{/inf}": "下标",
+      "{it}…{/it}": "斜体",
+      "{ldquo}": "左双引号（U+201C）",
+      "{rdquo}": "右双引号（U+201D）",
+      "{p_br}": "此处插入段落换行",
+      "{sc}…{/sc}": "小型大写",
+      "{sup}…{/sup}": "上标"
+    },
+    "extra_formatting": {
+      "{bit}…{/bit}": "粗斜体（在 2.29.1 之外补充使用）",
+      "{itsc}…{/itsc}": "斜体小型大写",
+      "{rom}…{/rom}": "正体（用于在粗体/斜体/小型大写中恢复正体）"
+    },
+    "word_marking_and_gloss": {
+      "{gloss}…{/gloss}": "该语境下的释义注释，渲染为方括号、正体",
+      "{parahw}…{/parahw}": "段落标签中的词头，渲染为加粗小型大写",
+      "{phrase}…{/phrase}": "正文中的短语，渲染为粗斜体",
+      "{qword}…{/qword}": "引文中的词头，渲染为斜体",
+      "{wi}…{/wi}": "正文中被例释的词，渲染为斜体"
+    },
+    "cross_reference_grouping": {
+      "{dx}…{/dx}": "交叉引用组；前面渲染一个破折号",
+      "{dx_def}…{/dx_def}": "括注式交叉引用；整体渲染在圆括号内",
+      "{dx_ety}…{/dx_ety}": "词源中的定向交叉引用；前面渲染破折号",
+      "{ma}…{/ma}": "词源中的「more at」交叉引用；前面渲染破折号并输出 \"more at \""
+    },
+    "cross_reference": {
+      "_format": "{token|字段2|字段3|字段4}，字段以 \"|\" 分隔，至少 2 段、至多 4 段；缺省段可为空。渲染时按下列规则找「显示文本」与「目标 id」。",
+      "{a_link|text}": "自动链接：字段2 既是链接文本也是目标 id（可能与 id 不完全一致）",
+      "{d_link|text|id}": "直接链接：字段2 为文本；字段3 非空则用其作目标 id，否则用字段2",
+      "{i_link|text|id}": "斜体链接：同上，渲染为斜体",
+      "{et_link|text|id}": "词源链接：同上",
+      "{mat|text|id}": "more-at 目标：仅出现在 {ma} 内；规则同上",
+      "{sx|text|id|n}": "同义交叉引用：字段2 文本；字段4 为义项号及及物/不及物信息，渲染在链接文本之后",
+      "{dxt|text|id|kind}": "定向交叉引用目标：仅出现在 {dx}/{dx_def}/{dx_ety} 内。字段4 为 \"illustration\" 时字段3 是 artid，为 \"table\" 时字段3 是 tableid，否则按 d_link 规则取目标 id；字段4 为义项号时渲染在文本后，但 \"table\" 不渲染"
+    },
+    "date_sense": {
+      "{ds||||}": "日期义项 token，仅出现在 date 中；用于把「首次使用时间」关联到某个义项。5 段以 \"|\" 分隔：字段2 = \"t\"（及物动词）/\"i\"（不及物动词）/空，字段3 = 加粗义项号，字段4 = 小写字母义项号，字段5 = 括注义项号。例：\"before 12th century{ds|t|1|a|1}\" 表示对应及物义项 1a(1)。五段全空时不应输出任何内容"
+    }
+  }
+}

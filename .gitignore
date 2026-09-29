@@ -8,3 +8,14 @@ wheels/
 
 # Virtual environments
 .venv
+
+# VSCode workspace
+*.code-workspace
+
+# .env
+.env
+.env.*
+!.env.example
+
+# .trash
+.trash/

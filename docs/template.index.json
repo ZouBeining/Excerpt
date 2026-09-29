@@ -1,0 +1,18 @@
+{
+  "title": "test",
+  "source": "tests/test.md",
+  "items": [
+    {
+      "word": "director",
+      "type": "word",
+      "sentence": "Tushman, the middle-school **director**.",
+      "line": 8
+    },
+    {
+      "word": "returning your call",
+      "type": "phrase",
+      "sentence": "This is Amanda Will, **returning your call**?",
+      "line": 10
+    }
+  ]
+}
