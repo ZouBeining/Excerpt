@@ -25,6 +25,7 @@ needs the standard library, so it cannot create an import cycle.
 from __future__ import annotations
 
 import copy
+import re
 import threading
 from typing import Any
 
@@ -115,20 +116,48 @@ SCHEMA_CANDIDATES: list[dict[str, Any] | None] = [
     None,
 ]
 
-#: Markers that mean "the format field you sent is not supported".  Kept
-#: deliberately narrow: the predicate must fire only when the error names the
-#: format field, never for the generic ``invalid_request_error`` wording that
-#: providers also use for an unknown ``extra_body`` field.  Matching that
-#: would make a rejected reasoning dialect look like a format rejection and
-#: send the walk down the wrong list.
-_REJECTION_MARKERS = (
-    "response_format",
-    "json_schema",
-    "json_object",
-    "structured output",
-    "structured_output",
-    "guided_json",
-    "unsupported_response_format",
+#: Field and feature names that identify the ``response_format`` axis.
+#:
+#: This is the *necessary* condition of a format rejection: the error must
+#: name a field this module actually sends, or an equivalent spelling of the
+#: feature.  Anchoring on the name (rather than on the refusal verb) is what
+#: keeps a generic "unsupported" from being mistaken for a format problem —
+#: ``unsupported model`` and ``not supported in your region`` contain no field
+#: name and so cannot match.
+#:
+#: ``structured[-_ ]?outputs?`` covers every separator and plural seen in the
+#: wild at once.  The spellings that actually appear include
+#: ``structured-outputs`` (OpenRouter's feature validator), ``structured_outputs``,
+#: ``structured outputs``, ``structured output`` and ``structuredoutput``.
+_FORMAT_FIELD_PATTERN = re.compile(
+    r"(response_format"
+    r"|json_schema"
+    r"|json_object"
+    r"|guided_json"
+    r"|guided_choice"
+    r"|structured[-_ ]?outputs?)",
+    re.IGNORECASE,
+)
+
+#: The verb phrase a provider uses to refuse a feature.  Never used on its own
+#: — it is always paired with a field name, either to claim a format rejection
+#: or (in :data:`_REASONING_AXIS_PATTERN`) to yield one.
+_FEATURE_PATTERN = (
+    r"(does not (support|recognize|recognise|implement|accept)"
+    r"|not (supported|recognised|recognized)"
+    r"|unsupported|unrecognised|unrecognized"
+    r"|no support for)"
+)
+
+#: A refusal verb pointed at the *reasoning* axis.  When this fires, the format
+#: predicate must step aside: the two axes have separate candidate lists, and
+#: following the wrong one costs a request per candidate.  This backs up the
+#: ordering in ``llm._request_completion``, which already checks reasoning
+#: first.
+_REASONING_AXIS_PATTERN = re.compile(
+    _FEATURE_PATTERN
+    + r".{0,40}?(reasoning|thinking|chat_template_kwargs|reasoning_effort)",
+    re.IGNORECASE | re.DOTALL,
 )
 
 #: Index of the dialect this process settled on.  ``None`` until a request
@@ -174,17 +203,36 @@ def _inject_schema(payload: dict[str, Any], schema: dict[str, Any]) -> None:
 def is_format_rejection(exc: Exception) -> bool:
     """Return whether *exc* reads like "the format field is not supported".
 
-    A substring hunt rather than a status-code check, because endpoints
-    report an unsupported ``response_format`` inconsistently: a bare 400, a
-    ``unsupported_response_format`` code, or a note about the schema itself.
+    Two conditions, in order:
 
-    The predicate is narrower than a generic "bad request" test on purpose.
-    It must not fire for a rejected ``extra_body`` field (the reasoning
-    dialects), because that rejection belongs to a different candidate list
-    and following the wrong one wastes a request per candidate.
+    1. the message must name a field this module sends — ``response_format``,
+       ``json_schema``, ``json_object``, ``guided_json`` / ``guided_choice``,
+       or "structured output(s)" in any separator or number
+       (:data:`_FORMAT_FIELD_PATTERN`);
+    2. the refusal must not be aimed at the reasoning axis
+       (:data:`_REASONING_AXIS_PATTERN`), which has its own candidate list.
+
+    Naming a field is a *necessary* condition, and that is the whole trick.  A
+    provider may say ``unsupported``, ``403 forbidden``, ``does not support
+    feature`` or nothing at all, but as long as the sentence carries the field
+    name the walk should move on.  Conversely, a bare ``unsupported`` with no
+    field name (``unsupported model``, ``not supported in your region``) is
+    left alone, so the predicate stays narrower than "any 400".
+
+    Note that the *spelling* of the refusal verb is deliberately not matched:
+    OpenRouter's validator says ``does not support feature: structured-outputs``
+    while another endpoint says ``unsupported_response_format``, and pinning
+    the predicate to either wording is exactly the brittleness that let a
+    hyphen slip past an earlier, marker-based version of this function.
     """
-    message = str(exc).lower()
-    return any(marker in message for marker in _REJECTION_MARKERS)
+    message = str(exc)
+    if not _FORMAT_FIELD_PATTERN.search(message):
+        return False
+    # A refusal aimed at the reasoning axis belongs to the other candidate
+    # list, even when a format word also appears in the payload.
+    if _REASONING_AXIS_PATTERN.search(message):
+        return False
+    return True
 
 
 def reset_probe_cache() -> None:

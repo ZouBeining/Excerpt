@@ -132,6 +132,66 @@ def test_is_format_rejection_ignores_a_bare_rate_limit():
     )
 
 
+def test_is_format_rejection_matches_the_hyphenated_feature_wording():
+    """The exact wording OpenRouter returned for an unsupported model.
+
+    A hyphenated ``structured-outputs`` slipped past an earlier, marker-list
+    version of this predicate, so the whole fallback silently became a retry
+    loop.  This is the regression guard for that.
+    """
+    assert llm_format.is_format_rejection(
+        RuntimeError(
+            "HTTP 400: model: inclusionai/ling-3.0-flash-sante does not "
+            "support feature: structured-outputs"
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Error code: 400 - does not support structured outputs",
+        "Error code: 400 - structured_outputs unsupported",
+        "Error code: 400 - unsupported guided_json",
+        "Error code: 400 - guided_choice is not supported",
+        "Error code: 400 - does not support response_format",
+        "Error code: 400 - json_object is not supported",
+        "Error code: 400 - model does not accept json_schema",
+    ],
+)
+def test_is_format_rejection_matches_provider_variants(message):
+    assert llm_format.is_format_rejection(RuntimeError(message))
+
+
+def test_is_format_rejection_ignores_an_unrelated_unsupported_feature():
+    """A refusal with no format field name must not move the walk."""
+    assert not llm_format.is_format_rejection(
+        RuntimeError("Error code: 400 - model gpt-x does not support feature: tools")
+    )
+
+
+def test_is_format_rejection_ignores_a_model_not_found_400():
+    assert not llm_format.is_format_rejection(
+        RuntimeError(
+            "Error code: 400 - deepseek/deepseek-r1:free is not a valid model ID"
+        )
+    )
+
+
+def test_is_format_rejection_ignores_a_mixed_reasoning_payload():
+    """A refusal aimed at the reasoning axis stays with reasoning.
+
+    The payload mentions "structured output" too, but the refusal verb points
+    at ``reasoning_effort``; claiming it here would send the walk down the
+    wrong candidate list.
+    """
+    assert not llm_format.is_format_rejection(
+        RuntimeError(
+            "Error code: 400 - unsupported reasoning_effort with structured output"
+        )
+    )
+
+
 def test_advance_is_thread_safe():
     """Parallel workers share one state; the index must never over-run."""
     state = llm_format.SchemaState()

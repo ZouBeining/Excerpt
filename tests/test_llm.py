@@ -689,6 +689,114 @@ class TestSchemaFallback:
             RuntimeError("Error code: 400 - unknown parameter: reasoning")
         )
 
+    def test_the_reproduced_feature_wording_falls_back(self):
+        """Regression: the real OpenRouter refusal must trigger the walk.
+
+        The wording is copied verbatim from a live run.  Before the fix it
+        matched no marker, so the walk never advanced and the retries were
+        spent re-sending the same refused request.
+        """
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_retries=0
+        )
+        entry = make_entry()
+        client = FakeClient(
+            [
+                RuntimeError(
+                    "HTTP 400: model: inclusionai/ling-3.0-flash-sante does "
+                    "not support feature: structured-outputs"
+                ),
+                GOOD_REPLY,
+            ]
+        )
+
+        llm.complete_entries([entry], client=client, model="m")
+
+        assert entry.code == CODE_OK
+        assert len(client.recorder) == 2
+        assert client.recorder[0]["response_format"]["json_schema"]["strict"] is True
+        # The fallback reached a dialect the endpoint accepted.
+        assert (
+            client.recorder[1]["response_format"]
+            != client.recorder[0]["response_format"]
+        )
+
+    def test_an_unrecognised_400_advances_one_candidate(self):
+        """A 400 we cannot attribute is still treated as a request-shape problem.
+
+        ``response_format`` is the part of the request this module varies, so
+        trying the next candidate is strictly better than re-sending the
+        request that was just refused.
+        """
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_retries=0
+        )
+        entry = make_entry()
+        client = FakeClient(
+            [RuntimeError("Error code: 400 - oops"), GOOD_REPLY]
+        )
+
+        llm.complete_entries([entry], client=client, model="m")
+
+        assert entry.code == CODE_OK
+        assert len(client.recorder) == 2
+        assert (
+            client.recorder[1]["response_format"]
+            != client.recorder[0]["response_format"]
+        )
+
+    def test_a_reasoning_400_is_never_treated_as_a_format_rejection(
+        self, monkeypatch
+    ):
+        """A reasoning refusal must not be consumed by the format walk.
+
+        The message contains no format field name, so the format predicate
+        declines it and the request is handled by the reasoning walk instead.
+        Only once that walk is exhausted does the generic ``bad_request``
+        fallback advance the format walk — which is the correct order, since
+        by then the reasoning field has been dropped altogether.
+        """
+        monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
+        config.configure(
+            dict_choice="MW",
+            use_llm=False,
+            env_path="",
+            llm_retries=3,
+            llm_workers=1,
+        )
+        exc = RuntimeError(
+            "Error code: 400 - invalid_request_error: unknown parameter "
+            "reasoning_effort"
+        )
+        assert llm._classify_llm_error(exc) == "bad_request"
+        assert not llm_format.is_format_rejection(exc)
+
+        entry = make_entry()
+        client = FakeClient([exc] * 6 + [GOOD_REPLY])
+
+        llm.complete_entries([entry], client=client, model="m")
+
+        # The reasoning walk steps through every reasoning candidate without
+        # disturbing the format walk: the format dialect stays on its first
+        # candidate for exactly as many requests as the reasoning walk takes.
+        reasoning_candidates = len(
+            llm_reasoning.ReasoningState().candidates
+        )
+        first_dialects = [
+            call.get("response_format") for call in client.recorder
+        ]
+        strict = [
+            call
+            for call in client.recorder
+            if call.get("response_format", {})
+            .get("json_schema", {})
+            .get("strict")
+            is True
+        ]
+        assert len(strict) == reasoning_candidates
+        # ...and the format walk only starts moving after that.
+        assert first_dialects[-1]["type"] != "json_schema"
+
 
 class TestErrorSummary:
     """Provider errors must be reduced to one actionable line."""

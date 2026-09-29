@@ -337,7 +337,10 @@ def _request_completion(
             # The reasoning check must come first.  Providers report an unknown
             # ``extra_body`` field with wording such as ``invalid_request_error``
             # that a format test would also match, and following the wrong
-            # candidate list wastes a request per candidate.
+            # candidate list wastes a request per candidate.  ``llm_format``
+            # additionally yields on its own when the refusal names the
+            # reasoning axis, but the ordering here is the primary guarantee —
+            # do not reorder these two blocks.
             if extra_body and llm_reasoning.is_reasoning_rejection(exc):
                 raise ReasoningUnsupported(str(exc)) from exc
             # A provider that refuses a dialect should fall back to the next.
@@ -354,6 +357,16 @@ def _request_completion(
                         "[llm] structured output unsupported; relying on the "
                         "prompt and local validation"
                     )
+            elif _classify_llm_error(exc) == "bad_request" and state.advance():
+                # A 400/422 that names no format field and no reasoning field
+                # is still, almost always, a complaint about the shape of the
+                # request — and ``response_format`` is the part of that shape
+                # this module varies.  Advance one candidate (again without
+                # spending retry budget) so a provider whose wording we do not
+                # recognise degrades instead of aborting.  Once the walk is on
+                # its last candidate there is nothing left to give up, so
+                # ``advance`` returns False and the normal retry path resumes.
+                continue
             attempt += 1
 
     raise RuntimeError(f"LLM completion failed: {last_error}")
@@ -391,8 +404,14 @@ def _classify_llm_error(exc: Exception) -> str:
     """Classify a provider failure into a retry decision.
 
     Returns one of ``auth`` (give up at once), ``rate_limit``, ``server``,
-    ``network``, ``bad_reply``, or ``other``.  Only ``auth`` is treated as
-    fatal; the rest are worth another attempt.
+    ``network``, ``bad_reply``, ``bad_request``, or ``other``.  Only ``auth``
+    is treated as fatal; the rest are worth another attempt.
+
+    ``bad_request`` marks a 400/422 that no other rule claimed.  It exists so
+    that :func:`_request_completion` can treat "the endpoint rejected this
+    request shape for a reason we do not recognise" as one more reason to try
+    the next structured-output candidate, rather than letting it burn the
+    retry budget re-sending a request that is already known to be refused.
     """
     text = str(exc)
     lowered = text.lower()
@@ -408,6 +427,8 @@ def _classify_llm_error(exc: Exception) -> str:
         return "network"
     if isinstance(exc, (json.JSONDecodeError, ValueError)):
         return "bad_reply"
+    if status in (400, 422):
+        return "bad_request"
     return "other"
 
 
