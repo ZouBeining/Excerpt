@@ -102,6 +102,88 @@ class TestArgumentParser:
         assert args.timeout == 5
         assert args.retry == 1
 
+    def test_llm_tuning_defaults_to_none_so_env_decides(self):
+        args = build_parser().parse_args(["a.md"])
+        assert args.llm_timeout is None
+        assert args.llm_retries is None
+        assert args.llm_workers is None
+        assert args.llm_backoff is None
+
+    def test_llm_tuning_flags_parse(self):
+        args = build_parser().parse_args(
+            [
+                "a.md",
+                "--llm-timeout", "5",
+                "--llm-retries", "1",
+                "--llm-workers", "3",
+                "--llm-backoff", "0",
+            ]
+        )
+        assert args.llm_timeout == 5.0
+        assert args.llm_retries == 1
+        assert args.llm_workers == 3
+        assert args.llm_backoff == 0.0
+
+
+class TestLlmSettings:
+    """The LLM knobs are separate from the dictionary's and follow the ladder."""
+
+    def test_defaults(self):
+        config.configure(dict_choice="MW", use_llm=False, env_path="")
+        settings = config.get_llm_settings()
+        assert settings["timeout"] == 60.0
+        assert settings["retries"] == 3
+        assert settings["workers"] == 1
+        assert settings["backoff"] == 0.5
+        assert settings["reasoning"] is None
+
+    def test_llm_timeout_is_independent_of_the_session_timeout(self):
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", timeout=9.0
+        )
+        # The dictionary's 20s-style budget must not leak into the LLM stage.
+        assert config.get_llm_settings()["timeout"] == 60.0
+        assert config.get_session_settings()["timeout"] == 9.0
+
+    def test_env_is_used_when_the_cli_is_silent(self, monkeypatch):
+        monkeypatch.setenv("LLM_TIMEOUT", "9")
+        monkeypatch.setenv("LLM_WORKERS", "4")
+        config.configure(dict_choice="MW", use_llm=False, env_path="")
+        settings = config.get_llm_settings()
+        assert settings["timeout"] == 9.0
+        assert settings["workers"] == 4
+
+    def test_cli_beats_env(self, monkeypatch):
+        monkeypatch.setenv("LLM_TIMEOUT", "9")
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_timeout=5.0
+        )
+        assert config.get_llm_settings()["timeout"] == 5.0
+
+    def test_workers_are_clamped(self, monkeypatch):
+        monkeypatch.setenv("LLM_WORKERS", "0")
+        config.configure(dict_choice="MW", use_llm=False, env_path="")
+        assert config.get_llm_settings()["workers"] == 1
+
+        monkeypatch.setenv("LLM_WORKERS", "999")
+        config.configure(dict_choice="MW", use_llm=False, env_path="")
+        assert config.get_llm_settings()["workers"] == 16
+
+    def test_malformed_reasoning_env_is_ignored(self, monkeypatch):
+        monkeypatch.setenv("LLM_REASONING", "{bad json")
+        # Must not raise: the value is hand-written in .env.
+        config.configure(dict_choice="MW", use_llm=False, env_path="")
+        assert config.get_llm_settings()["reasoning"] is None
+
+    def test_well_formed_reasoning_env_is_parsed(self, monkeypatch):
+        monkeypatch.setenv(
+            "LLM_REASONING", '{"reasoning": {"enabled": false}}'
+        )
+        config.configure(dict_choice="MW", use_llm=False, env_path="")
+        assert config.get_llm_settings()["reasoning"] == {
+            "reasoning": {"enabled": False}
+        }
+
 
 class TestPipeline:
     def test_missing_source_returns_one(self, tmp_path, capsys):

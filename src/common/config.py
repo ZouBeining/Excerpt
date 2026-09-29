@@ -6,6 +6,7 @@ both ``excerpt`` and ``lookup``.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -64,6 +65,7 @@ __all__ = [
     "get_openai_settings",
     "normalize_openai_base_url",
     "get_session_settings",
+    "get_llm_settings",
     "is_dict_choice_valid",
     # standard entry schema
     "STANDARD_ENTRY_KEYS",
@@ -315,6 +317,11 @@ _openai_api_key: str = ""
 _openai_base_url: str = ""
 _openai_model: str = ""
 
+#: An explicit ``LLM_REASONING`` payload (raw JSON) that overrides the built-in
+#: candidates for suppressing "thinking" on reasoning models.  ``None`` means
+#: "no override, use the built-in candidate list".
+_reasoning_override: dict[str, Any] | None = None
+
 # Session tuning, seeded from the CLI (priority: CLI > .env > default).
 _session_settings: dict[str, Any] = {
     "timeout": 20.0,
@@ -324,6 +331,13 @@ _session_settings: dict[str, Any] = {
     "cache_path": "",
     "use_cache": True,
     "xelatex": "",
+    # LLM-specific tuning.  Deliberately *separate* from ``timeout``/``retry``
+    # above: a reasoning model routinely needs more than the 20s that suits a
+    # dictionary GET, and the two stages must not share one budget.
+    "llm_timeout": 60.0,
+    "llm_retries": 3,
+    "llm_workers": 1,
+    "llm_backoff": 0.5,
 }
 
 
@@ -332,6 +346,23 @@ def _parse_bool(value: str | None) -> bool:
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_reasoning_override(raw: str | None) -> dict[str, Any] | None:
+    """Parse ``LLM_REASONING`` into a dict, or ``None`` when unusable.
+
+    The value is hand-written JSON in ``.env``, so malformed input must never
+    abort a run: an unparsable value simply means "no override" and the built-in
+    candidate list is used instead.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def configure(
@@ -347,6 +378,10 @@ def configure(
     use_cache: bool | None = None,
     compile_latex: bool | None = None,
     xelatex: str | None = None,
+    llm_timeout: float | None = None,
+    llm_retries: int | None = None,
+    llm_workers: int | None = None,
+    llm_backoff: float | None = None,
 ) -> None:
     """Load environment variables and apply runtime configuration.
 
@@ -360,6 +395,7 @@ def configure(
     global _dict_choice, _dict_config, _dict_api_key
     global _use_llm, _compile_latex
     global _openai_api_key, _openai_base_url, _openai_model
+    global _reasoning_override
 
     # ``override=True`` so that ``.env`` beats a pre-existing shell variable:
     # the documented priority is CLI > .env > config.py.
@@ -461,6 +497,44 @@ def configure(
         xelatex if xelatex is not None else (env_xelatex or "")
     ).strip()
 
+    # LLM tuning follows the same CLI > .env > default ladder.  These keys are
+    # rewritten unconditionally so that a re-``configure()`` (tests, repeated
+    # runs) never inherits a stale value.
+    env_llm_timeout = os.getenv("LLM_TIMEOUT")
+    env_llm_retries = os.getenv("LLM_RETRIES")
+    env_llm_workers = os.getenv("LLM_WORKERS")
+    env_llm_backoff = os.getenv("LLM_BACKOFF")
+
+    _session_settings["llm_timeout"] = float(
+        llm_timeout
+        if llm_timeout is not None
+        else (env_llm_timeout if env_llm_timeout else 60.0)
+    )
+    _session_settings["llm_retries"] = int(
+        llm_retries
+        if llm_retries is not None
+        else (env_llm_retries if env_llm_retries else 3)
+    )
+    # A worker count outside 1..16 is never intentional: 0/negative would break
+    # the executor and a huge value would only invite rate limiting.
+    _session_settings["llm_workers"] = max(
+        1,
+        min(
+            16,
+            int(
+                llm_workers
+                if llm_workers is not None
+                else (env_llm_workers if env_llm_workers else 1)
+            ),
+        ),
+    )
+    _session_settings["llm_backoff"] = float(
+        llm_backoff
+        if llm_backoff is not None
+        else (env_llm_backoff if env_llm_backoff else 0.5)
+    )
+    _reasoning_override = _parse_reasoning_override(os.getenv("LLM_REASONING"))
+
     _configured = True
 
 
@@ -559,6 +633,25 @@ def get_session_settings() -> dict[str, Any]:
     """Return HTTP/session tuning: timeout, retry, delay, proxy, cache path."""
     _ensure_configured()
     return dict(_session_settings)
+
+
+def get_llm_settings() -> dict[str, Any]:
+    """Return LLM tuning: timeout, retries, workers, backoff, reasoning override.
+
+    Aggregating these in one place keeps ``llm.py`` from having to know the
+    ``_session_settings`` key names, and gives future LLM knobs (cost ceilings,
+    token budgets) a single obvious home.  Note that ``timeout``/``retries``
+    here are the LLM's own values and are **not** the dictionary stage's.
+    """
+    _ensure_configured()
+    settings = get_session_settings()
+    return {
+        "timeout": float(settings.get("llm_timeout", 60.0)),
+        "retries": int(settings.get("llm_retries", 3)),
+        "workers": int(settings.get("llm_workers", 1)),
+        "backoff": float(settings.get("llm_backoff", 0.5)),
+        "reasoning": _reasoning_override,
+    }
 
 
 def is_dict_choice_valid(choice: str) -> bool:
