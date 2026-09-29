@@ -62,6 +62,7 @@ __all__ = [
     "get_use_llm",
     "get_compile_latex",
     "get_openai_settings",
+    "normalize_openai_base_url",
     "get_session_settings",
     "is_dict_choice_valid",
     # standard entry schema
@@ -407,7 +408,9 @@ def configure(
 
     if _use_llm:
         _openai_api_key = os.environ.get("OPENAI_API_KEY", "")
-        _openai_base_url = os.environ.get("OPENAI_BASE_URL", "")
+        _openai_base_url = normalize_openai_base_url(
+            os.environ.get("OPENAI_BASE_URL", "")
+        )
         _openai_model = os.environ.get("OPENAI_MODEL", "")
     else:
         _openai_api_key = ""
@@ -518,9 +521,38 @@ def get_compile_latex() -> bool:
 
 
 def get_openai_settings() -> tuple[str, str, str]:
-    """Return ``(api_key, base_url, model)`` for the LLM provider."""
+    """Return ``(api_key, base_url, model)`` for the LLM provider.
+
+    ``base_url`` is normalised to a root URL (see
+    :func:`normalize_openai_base_url`), which is what the OpenAI SDK expects.
+    """
     _ensure_configured()
     return _openai_api_key, _openai_base_url, _openai_model
+
+
+#: Path the OpenAI SDK and this tool append to the configured base URL.
+_CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
+
+
+def normalize_openai_base_url(url: str) -> str:
+    r"""Return *url* as a base URL the OpenAI SDK can consume.
+
+    Users routinely paste the full endpoint (``https://host/v1/chat/completions``)
+    into ``OPENAI_BASE_URL`` because that is what API docs display.  The SDK
+    then appends ``/chat/completions`` itself, producing a doubled path and a
+    404.  Stripping a trailing suffix here keeps the setting forgiving for
+    humans while every consumer sees one canonical form.
+
+    A trailing slash is removed too, so the SDK does not build ``//``.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    stripped = text.rstrip("/")
+    lowered = stripped.lower()
+    if lowered.endswith(_CHAT_COMPLETIONS_SUFFIX):
+        stripped = stripped[: -len(_CHAT_COMPLETIONS_SUFFIX)].rstrip("/")
+    return stripped
 
 
 def get_session_settings() -> dict[str, Any]:
