@@ -30,3 +30,6 @@ excerpt-demo.pdf
 *.out
 *.toc
 *.synctex.gz
+
+# WorkBuddy workspace metadata
+.workbuddy/
