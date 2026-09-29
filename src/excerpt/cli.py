@@ -1,126 +1,199 @@
-# from .env import find_env_file, load_api_key, mask
-# from .fd_cli import main as main_fd
-# from .mw_cli import main as main_mw
+r"""The ``excerpt`` pipeline.
 
-import json
+Five stages run in a fixed order, exactly as AGENTS.md requires:
+
+1. ``excerpt.extractor``   parse the Markdown, write ``.index.json`` / index ``.md``
+2. ``lookup``              query the dictionary, write ``.words.json`` / ``.errors.json``
+3. ``excerpt.llm``         complete non-word entries, update both JSON files
+4. ``excerpt.write_md``    render ``.md`` and ``.index.md`` from the final data
+5. ``excerpt.latex``       render the LaTeX document set
+
+This module deliberately contains **no** dictionary-choice logic: everything
+that depends on the chosen dictionary comes from ``common.config``.
+"""
+
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
-from . import lemmatizer
+from common import config
+from common.config import (
+    CODE_OK,
+    artifacts,
+    default_out_dir_name,
+    normalize_title,
+)
 
+from . import llm, write_md
 from .arg import build_parser
-from .config import *
-from .extractor import extract_bold_entries
-from .lookup import main as lookup_main
-from .mw_note import render, render_index, title_from_source
-from .mw_errors import write_errors
-from .mw_tex_cli import DEFAULT_NOTE
+from .extractor import extract_bold_entries, write_index
+
+
+def _resolve_out_dir(args, title: str, source: Path) -> Path:
+    """Pick the output directory: CLI > ``OUTPUT_DIR`` > ``.{title}_out``."""
+    if args.output_dir is not None:
+        return args.output_dir
+
+    configured = str(config.get_session_settings().get("env_out_dir") or "").strip()
+    if configured:
+        return Path(configured)
+
+    return source.parent / default_out_dir_name(title)
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Get command-line arguments and parameters
     args = build_parser().parse_args(argv)
 
-    config.configure(dict_choice=args.dict_choice, use_llm=args.use_llm)
+    try:
+        config.configure(
+            dict_choice=args.dict_choice,
+            use_llm=args.use_llm,
+            env_path=str(args.env_file) if args.env_file else None,
+            timeout=args.timeout,
+            retry=args.retry,
+            delay=args.delay,
+            proxy=args.proxy,
+            cache_path=str(args.cache_path) if args.cache_path else None,
+            use_cache=not args.no_cache,
+        )
+    except ValueError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 2
 
-    # Check if source file exists
     source: Path = args.source
     if not source.is_file():
         print(f"[error] Source file doesn't exist: {source}", file=sys.stderr)
         return 1
 
-    # Specify and prepare output directory
-    out_dir = args.output_dir or source.parent / "excerpt_output"
+    # `{title}`: the CLI value, else the file stem, reduced to lowercase ASCII.
+    title = normalize_title(args.title or source.stem)
+    out_dir = _resolve_out_dir(args, title, source)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use extractor.py to extract the bolded records
-    text: str = source.read_text(encoding="utf-8")
-    entries: list[BoldEntry] = extract_bold_entries(text)
-    print(f"[extract] {len(entries)} bolded records are extracted from {source}")
+    art = artifacts(title, out_dir=str(out_dir))
+    dict_slug = art.dict_slug
+    print(
+        f"[config] dict={config.get_dict_choice()} ({dict_slug}), "
+        f"llm={'on' if config.get_use_llm() else 'off'}"
+    )
+    print(f"[config] title={title}, out_dir={out_dir}")
 
-    # Lookup the words
-    if not args.no_lookup:
-        session, cache = lookup_main(args, entries)
+    # ------------------------------------------------------------------
+    # 1. Extraction
+    # ------------------------------------------------------------------
+    text = source.read_text(encoding="utf-8")
+    entries = extract_bold_entries(text)
+    write_index(entries, art, source.name)
+    print(f"[extract] {len(entries)} bolded records from {source}")
 
-        # Lemmatize
+    # ------------------------------------------------------------------
+    # 2. Dictionary lookup
+    # ------------------------------------------------------------------
+    cache = None
+    summary: dict = {
+        "words": 0,
+        "total": 0,
+        "retriable": 0,
+        "dict_api_key_problems": 0,
+    }
+
+    if args.no_lookup:
+        from lookup import write_json
+
+        for entry in entries:
+            entry.dict_slug = dict_slug
+        summary = write_json.write_documents(
+            entries,
+            words_path=out_dir / art.words_json,
+            errors_path=out_dir / art.errors_json,
+            dict_slug=dict_slug,
+        )
+        print("[lookup] skipped (--no-lookup)")
+    else:
+        from lookup import run as lookup_run
+
+        cache, entries, summary = lookup_run(
+            entries,
+            art,
+            timeout=args.timeout,
+            retry=args.retry,
+            delay=args.delay,
+            use_cache=not args.no_cache,
+            cache_path=args.cache_path,
+        )
+        print(
+            f"[lookup] {summary['words']} entries written; "
+            f"{summary['total']} errors ({summary['retriable']} retriable)"
+        )
+
+        # Base-form restoration runs inside the lookup stage, as required.
         if not args.no_lemma:
+            from lookup import lemmatizer, write_json
+
+            before = len(entries)
             entries = lemmatizer.attach_lemma_entries(
                 entries,
-                session=session,
-                api_key=dict_api_key,
+                session=None,
                 cache=cache,
-                timeout =args.timeout,
+                timeout=args.timeout,
+                retry=args.retry,
                 delay=args.delay,
             )
-            if cache is not None:
-                cache.save()
-            lemma_total = sum(1 for e in entries if lemmatizer.is_lemma_entry(e))
-            print(f"[lemma] {lemma_total} entries are added.")
+            if len(entries) != before:
+                summary = write_json.write_documents(
+                    entries,
+                    words_path=out_dir / art.words_json,
+                    errors_path=out_dir / art.errors_json,
+                    dict_slug=dict_slug,
+                )
+                print(f"[lemma] {len(entries) - before} base-form entries appended")
 
-    records: list[dict] = [lemmatizer.boldentry_to_dict(e) for e in entries]
+    # ------------------------------------------------------------------
+    # 3. LLM completion (opt-in)
+    # ------------------------------------------------------------------
+    if config.get_use_llm():
+        entries = llm.run(entries, art, dict_slug=dict_slug)
+        print("[llm] completion stage finished")
+    else:
+        print("[llm] skipped (USE_LLM is off)")
 
-    # Write data into a bunch of documents
-    source_title = title_from_source(source.name)
+    if cache is not None:
+        cache.save()
 
-    # .words.json
-    words_title = f"{args.title or source_title}.{dict_choice}.words.json"
-    words_path = out_dir / words_title
-    words_path.write_text(
-        json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print(f"[write] {words_path}")
+    # ------------------------------------------------------------------
+    # 4. Markdown
+    # ------------------------------------------------------------------
+    paths = write_md.write_md(entries, art, source_name=source.name)
+    print(f"[write] {paths['note_md']}")
+    print(f"[write] {paths['index_md']}")
 
-    #.errors.json
-    errors_title: str = f"{args.title or source_title}.{dict_choice}.errors.json"
-    errors_path: Path = out_dir / errors_title
-    summary = write_errors(words_path, errors_path)
-    print(
-        f"[write] {errors_path},"
-        f"{summary['total']} errors in total: {summary['byType'] or 'None'}; "
-        f"among which {summary['retriable']} needs re-run."
-    )
+    # ------------------------------------------------------------------
+    # 5. LaTeX
+    # ------------------------------------------------------------------
+    if not args.no_latex:
+        from . import latex
 
-    # .md
-    md_title = f"{args.title or source_title}.md"
-    note_path = out_dir / md_title
-    note_path.write_text(
-        render(entries, source_name=source.name, title=source_title),
-        encoding="utf-8",
-    )
-    succeed_count = sum(1 for e in entries if e.code == CODE_OK)
-    print(f"[write] {note_path} ({succeed_count} entries found in the dictionary)")
-
-    # .index.md
-    index_title: str = f"{args.title}.index.md" or f"{source_title}.index.md"
-    index_path: Path = out_dir / index_title
-    index_path.write_text(
-        f"# {args.title or source_title} Vocabulary Index\n\n" + render_index(entries),
-        encoding="utf-8",
-    )
-    print(f"[write] Vocabulary index written in {index_path}")
-
-
-    if summary["keyProblems"]:
-        print(
-            f"[tip] {summary['keyProblems']} failed due to API problems."
-            f"Please check {env_path}"
-        )
-
-    # Write LaTeX document
-    if args.latex:
-        from .mw_latex import convert as to_latex
-
-        result = to_latex(
-            note_path,
+        result = latex.build(
+            [entry.to_dict() for entry in entries],
+            title=title,
             tex_dir=out_dir,
-            title=title_from_source(source.name),
-            note=DEFAULT_NOTE,
+            dict_slug=dict_slug,
         )
         print(f"[write] {result['main']}")
+        print(f"[write] {result['preamble']}")
         print(f"[write] {result['unit']}")
         print(
-            f"[tex] {result['entries']} entries in total；"
-            f'Compile: cd "{out_dir}" && xelatex main.tex (twice).'
+            f"[tex] {result['entries']} entries; compile with "
+            f'cd "{out_dir}" && xelatex main.tex (twice)'
+        )
+    else:
+        print("[tex] skipped (--no-latex)")
+
+    if summary.get("dict_api_key_problems"):
+        print(
+            f"[tip] {summary['dict_api_key_problems']} lookups failed on API key "
+            "problems; check DICT_API_KEY."
         )
 
     return 0
