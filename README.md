@@ -61,7 +61,17 @@ cp .env.example .env
 | `OPENAI_API_KEY`                        | OpenAI 兼容接口的 Key                                | 空                                    |
 | `OPENAI_BASE_URL`                       | 接口地址；可写 API 根地址或完整端点（末尾的 `/chat/completions` 会被自动去除） | 空                                    |
 | `OPENAI_MODEL`                          | 模型名                                             | 空                                    |
-| `TIMEOUT` / `RETRY` / `DELAY` / `PROXY` | 网络参数                                            | `20.0` / `3` / `0.2` / 无代理           |
+| `TIMEOUT` / `RETRY` / `DELAY` / `PROXY` | 词典网络参数                                          | `20.0` / `3` / `0.2` / 无代理           |
+| `LLM_TIMEOUT`                           | LLM 单次请求超时（秒）                                    | `60.0`                               |
+| `LLM_RETRIES`                           | LLM 请求失败后的重试次数                                   | `3`                                  |
+| `LLM_BACKOFF`                           | LLM 重试的退避基数（秒），实际等待为 `基数 × 第几次`                | `0.5`                                |
+| `LLM_WORKERS`                           | LLM 并发请求数，取值 1–16；`1` 即完全串行（旧行为）                 | `1`                                  |
+| `LLM_REASONING`                         | 手动指定关闭"思考"的原始 JSON，优先于内置候选列表                     | 空                                    |
+
+> **LLM 的超时与重试独立于 `TIMEOUT` / `RETRY`。**
+> 后两者只作用于词典查询（默认 20 s / 3 次），因为一个 GET 请求和一次推理模型的
+> 补全，时间量级和失败模式完全不同。若共用，推理模型常见的长首字节延迟会被 20 s
+> 误判为超时。
 
 **优先级：命令行参数 > `.env` > `config.py` 默认值。**  
 所以临时切换词典不必改文件，直接加 `--dict-choice FD` 即可。
@@ -121,6 +131,56 @@ excerpt notes.md --no-cache
 
 用 `--no-llm-check` 可跳过预检，用 `--no-cache` 可强制重新探测。
 
+> 探针请求同样携带"关闭思考"字段。否则推理模型会为了回一个 token 而先跑一整段
+> 思维链：既慢又白烧额度，在免费档上还更容易被限流——而限流的探针按设计不写缓存，
+> 于是**每次运行都要重探一次**，形成净损失。
+
+### LLM 补全的推理强度
+
+推理模型（`o3`、`nemotron`、`deepseek-reasoner` 等）在给出答案前会先"思考"一大段，
+而此时任务只是产出六个结构化字段——思维链**没有地方存放**，token 被计费、丢弃，
+并让每条记录都多等几秒。因此每次请求都会附带一个"关闭思考"的字段。
+
+问题在于**这个字段没有标准**，各家的写法互不兼容：
+
+| 供应商            | 写法                                                  |
+| -------------- | --------------------------------------------------- |
+| OpenRouter     | `reasoning: {enabled: false}`                       |
+| DeepSeek / vLLM | `chat_template_kwargs: {thinking: false}`           |
+| Qwen / 百炼     | `chat_template_kwargs: {enable_thinking: false}`    |
+| OpenAI o 系列   | `reasoning_effort: "minimal"`                       |
+
+程序不猜供应商，而是**按顺序逐个尝试**上表中的候选写法，用第一个被接受的，并在
+进程内记住结论（**不落盘**：这个字段随供应商 API 变动，缓存一个过期的结论只会把
+程序钉死在一个已被废弃的写法上）。若全部被拒，则退回**不发送任何该类字段**，改由
+`max_tokens` 兜底截断，保证开销仍然可控。
+
+如果你的供应商需要表中之外的写法，用 `LLM_REASONING` 直接指定原始 JSON 即可，
+它的优先级最高：
+
+```bash
+LLM_REASONING={"reasoning": {"enabled": false}}
+```
+
+> **更省事的办法**：这个任务只需要六个字段的英文释义，**并不需要推理模型**。
+> 换成一个非推理的小模型，延迟和费用都会低一个数量级，上述机制也就不再重要了。
+
+### LLM 的并发、超时与重试
+
+| 行为      | 默认                                                          | 说明                                                                    |
+| ------- | ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| 并发      | `LLM_WORKERS=1`（串行）                                         | 设为 `2`–`16` 可并发发请求，显著缩短总时长；但免费档 RPM 很低时，并发只会更快撞满限流               |
+| 超时      | `LLM_TIMEOUT=60.0`                                          | 独立于词典的 `TIMEOUT`；同时关掉了 SDK 自带的 600 s 默认值与内层重试，避免与自身重试相乘              |
+| 重试      | `LLM_RETRIES=3`，退避 `LLM_BACKOFF × 第几次`                       | 只有**可恢复**的错误才重试：超时、429、5xx、返回体不是合法 JSON                                  |
+| 立即中止    | —                                                           | `401`/`403` 属于配置问题，重试无意义，会立刻中止整批                                        |
+| 连续失败熔断  | 并发模式下连续 5 条失败                                                | 停止发新请求，剩余记录**保持 `pending`**，下次运行自动续跑（幂等）                                |
+
+并发只在"发请求 + 解析"这一段；`.words.json` / `.errors.json` 的写入**始终留在主线程**
+并在全部请求结束后一次性完成 —— 这两个文件是"读—合并—原子写"，多线程同时写会互相覆盖。
+
+因为失败记录会被保留为 `pending`，被熔断跳过的条目**不会丢失**：修好网络或额度后
+直接重跑同一条命令即可续上。
+
 ### 命令行动词速查
 
 | 参数                                              | 含义                                        |
@@ -131,6 +191,10 @@ excerpt notes.md --no-cache
 | `--dict-choice`                                 | 临时指定词典，覆盖 `.env`                          |
 | `--use-llm` / `--no-llm`                        | 强制开 / 关 LLM（互斥），覆盖 `USE_LLM`              |
 | `--no-llm-check`                                | 跳过 LLM 配置预检（默认会先验一次）                     |
+| `--llm-timeout`                                 | LLM 单请求超时，默认 `60.0`（独立于 `--timeout`）      |
+| `--llm-retries`                                 | LLM 重试次数，默认 `3`（独立于 `--retry`）              |
+| `--llm-backoff`                                 | LLM 重试退避基数，默认 `0.5`                          |
+| `--llm-workers`                                 | LLM 并发数，默认 `1`（串行，与旧行为一致）                   |
 | `--env-file`                                    | 指定另一个 `.env` 文件                           |
 | `--timeout` / `--retry` / `--delay` / `--proxy` | 网络参数，覆盖 `.env`                            |
 | `--cache-path`                                  | 指定缓存文件位置                                  |
@@ -250,7 +314,7 @@ pytest                                   # 已激活虚拟环境时
 .venv/Scripts/python.exe -m pytest       # Windows 直接指定解释器
 ```
 
-预期结果：**169 passed**。
+预期结果：**240 passed**。
 
 ### 2. 常用测试命令
 
@@ -280,11 +344,12 @@ pytest -x                                   # 首个失败即停
 | ------------------- | --- | ------------------------------------------- |
 | `test_extractor.py` | 19  | 加粗提取、单词判定、类型分类、去重合并                         |
 | `test_lookup.py`    | 44  | 缓存读写、HTTP 重试与分类、MW markup 清洗、MW 数据映射、写 JSON |
-| `test_llm.py`       | 20  | 提示词构造、schema 校验、幂等跳过已 filled 记录、错误摘要       |
-| `test_llm_check.py` | 25  | LLM 预检：指纹、缓存读写、HTTP 分类、端点拼接、错误解包          |
+| `test_llm.py`       | 39  | 提示词构造、schema 校验、幂等跳过已 filled 记录、错误摘要、超时与 token 上限、退避重试、错误分类、熔断、并发、推理强度降级 |
+| `test_llm_check.py` | 27  | LLM 预检：指纹、缓存读写、HTTP 分类、端点拼接、错误解包、探针关闭思考      |
+| `test_llm_reasoning.py` | 8 | 思考强度候选列表：覆盖优先、逐个降级、兜底、进程内缓存          |
 | `test_write_md.py`  | 11  | 笔记 / 索引渲染、表头统计                              |
 | `test_latex.py`     | 49  | LaTeX 转义、条目渲染、文件布局、`xelatex` 查找与编译（含缺工具回退）  |
-| `test_cli.py`       | 34  | 参数解析、优先级、输出目录解析、各阶段编排、LLM 预检门控              |
+| `test_cli.py`       | 43  | 参数解析、优先级、输出目录解析、各阶段编排、LLM 预检门控、LLM 配置项    |
 
 > Windows 上 pytest 清理临时目录时可能打印 `safe-delete ... trash-failed` 警告，  
 > 这是系统回收站机制的限制，**不影响测试结果**，可忽略。
@@ -333,7 +398,8 @@ src/
     arg.py                  # 命令行参数
     extractor.py            # 提取加粗 + 分类
     llm_check.py            # LLM 配置预检（用 requests，带缓存）
-    llm.py                  # LLM 补全短语 / 句子
+    llm_reasoning.py        # 关闭"思考"的候选写法（OpenRouter / DeepSeek / Qwen / o 系）
+    llm.py                  # LLM 补全短语 / 句子（超时、退避重试、熔断、可选并发）
     write_md.py             # 生成 Markdown 笔记与索引
     latex.py                # 生成 LaTeX（含 excerpt-latex 入口）
     main.tex / preamble.excerpt.tex
@@ -346,7 +412,7 @@ src/
     lemmatizer.py           # LemmInflect 原形还原
     mw_api.py  mw_data.py  mw_markup.py     # Merriam-Webster
     fd_api.py  fd_data.py                   # Free Dictionary
-tests/                      # 202 个离线测试
+tests/                      # 240 个离线测试
 docs/                       # JSON / Markdown 模板与 API 返回示例
 ```
 

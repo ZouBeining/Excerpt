@@ -202,3 +202,13 @@ write_json.py
 - 需要全局调用（多个模块需要引入）而又不是特别复杂的变量定义或类定义或函数, 必须写在 `config.py` 中.
 - **从数据进入 `write_json.py` 开始, 所有的数据都必须是标准化的（即对所有词典 API 的返回都一样, 如无可以为空）.**
 - 一律用 UTF-8 格式读取和保存文件.
+
+## LLM 阶段的并发与容错约束
+
+- **worker 线程不得落盘.** `ThreadPoolExecutor` 内只允许"发请求 + 解析回复", 任何文件写入必须回到主线程、在所有请求结束后一次性执行. 原因: `lookup/write_json.py` 的 `write_documents` 是"读 → 合并 → 原子写", 并发调用会因读—改—写竞态互相覆盖.
+- **`--llm-workers` 默认必须为 1（串行）.** 只有用户显式设置 >1 才并发. `workers <= 1` 必须走原串行路径, 保证与历史行为逐字一致.
+- **LLM 的超时与重试使用独立配置键**（`llm_timeout` / `llm_retries` / `llm_backoff`）, 不得复用 `TIMEOUT` / `RETRY` / `DELAY`. 词典的 GET 与推理模型的补全, 时间量级和失败模式完全不同, 共用会让正常的长首字节延迟被误判为超时.
+- **失败记录保持 `pending`.** LLM 失败时只写 `entry.detail`, **不得**改动 `entry.code` 或 `entry.source`. 这是幂等与"熔断后重跑续上"的基础: 只有 `code != CODE_OK` 的记录才会进 `.errors.json` 并保持 `pending`.
+- **熔断状态不落盘.** 它描述的是单次运行, 写盘会让下次运行被一个过期的"已中止"标记误伤. 这与 `llm_check.py` 从不缓存 transient 结论是同一个理由.
+- **新增 LLM provider 的思考强度写法时, 只在 `llm_reasoning.py` 的 `REASONING_CANDIDATES` 追加候选**, 不得在 `llm.py` 中硬编码 provider 名称或做供应商判断.
+- **新增任何 LLM 配置项时, 必须同步四处**: `config.py` 的 `_session_settings` 默认值、`configure()` 的三级优先级赋值、`.env.example` 的键、`tests/conftest.py` 的 `delenv` 列表. **缺一不可** —— `_session_settings` 是模块级可变对象, 测试环境变量清不掉它, 漏了最后一步会导致测试之间串状态.
