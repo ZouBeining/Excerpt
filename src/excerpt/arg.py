@@ -185,4 +185,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Base backoff (seconds) between LLM retries (default = 0.5)",
     )
+    parser.add_argument(
+        "--no-llm-cache",
+        action="store_true",
+        help=(
+            "Ignore and do not write the LLM completion cache "
+            "(default: reuse replies cached in ~/.cache/excerpt/{model}.cache.json)"
+        ),
+    )
+    parser.add_argument(
+        "--llm-cache-path",
+        default=None,
+        help=(
+            "Override the LLM completion cache file "
+            "(default: ~/.cache/excerpt/{model}.cache.json)"
+        ),
+    )
     return parser

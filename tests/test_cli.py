@@ -277,8 +277,8 @@ class TestPipeline:
     def test_llm_stage_runs_when_enabled(self, tmp_path, stub_lookup, monkeypatch):
         called: list = []
 
-        def fake_llm_run(entries, art, dict_slug=""):
-            called.append(art.title)
+        def fake_llm_run(entries, art, dict_slug="", **kwargs):
+            called.append((art.title, kwargs.get("cache")))
             return list(entries)
 
         monkeypatch.setattr("excerpt.llm.run", fake_llm_run)
@@ -288,7 +288,10 @@ class TestPipeline:
         cli.main(
             [str(source), "-o", str(tmp_path / "out"), "--use-llm", "--no-latex"]
         )
-        assert called == ["s"]
+        assert called[0][0] == "s"
+        # The CLI owns the cache and must hand a live one to the stage.
+        assert called[0][1] is not None
+        assert called[0][1].enabled is True
 
     def test_llm_stage_is_skipped_when_disabled(self, tmp_path, stub_lookup, monkeypatch):
         called: list = []
@@ -300,6 +303,60 @@ class TestPipeline:
         source.write_text(SAMPLE, encoding="utf-8")
         cli.main([str(source), "-o", str(tmp_path / "out"), "--no-llm", "--no-latex"])
         assert called == []
+
+    def test_no_llm_cache_flag_passes_a_disabled_cache(
+        self, tmp_path, stub_lookup, monkeypatch
+    ):
+        seen: list = []
+
+        def fake_llm_run(entries, art, dict_slug="", **kwargs):
+            seen.append(kwargs.get("cache"))
+            return list(entries)
+
+        monkeypatch.setattr("excerpt.llm.run", fake_llm_run)
+
+        source = tmp_path / "s.md"
+        source.write_text(SAMPLE, encoding="utf-8")
+        cli.main(
+            [
+                str(source),
+                "-o",
+                str(tmp_path / "out"),
+                "--use-llm",
+                "--no-llm-cache",
+                "--no-latex",
+            ]
+        )
+        assert seen[0] is not None
+        assert seen[0].enabled is False
+
+    def test_llm_cache_path_flag_is_honoured(
+        self, tmp_path, stub_lookup, monkeypatch
+    ):
+        seen: list = []
+        custom = tmp_path / "custom" / "llm.json"
+
+        def fake_llm_run(entries, art, dict_slug="", **kwargs):
+            seen.append(kwargs.get("cache"))
+            return list(entries)
+
+        monkeypatch.setattr("excerpt.llm.run", fake_llm_run)
+
+        source = tmp_path / "s.md"
+        source.write_text(SAMPLE, encoding="utf-8")
+        cli.main(
+            [
+                str(source),
+                "-o",
+                str(tmp_path / "out"),
+                "--use-llm",
+                "--llm-cache-path",
+                str(custom),
+                "--no-latex",
+            ]
+        )
+        assert seen[0] is not None
+        assert seen[0].path == custom
 
 
 class TestLlmPreflight:
@@ -314,7 +371,9 @@ class TestLlmPreflight:
             "excerpt.cli.check_llm_config",
             lambda **kwargs: CheckResult(ok=True, code="OK", status=200),
         )
-        monkeypatch.setattr("excerpt.llm.run", lambda entries, art, dict_slug="": entries)
+        monkeypatch.setattr(
+            "excerpt.llm.run", lambda entries, art, dict_slug="", **kw: entries
+        )
 
         source = tmp_path / "s.md"
         source.write_text(SAMPLE, encoding="utf-8")
@@ -362,7 +421,9 @@ class TestLlmPreflight:
                 ok=True, code="RATE_LIMITED", reason="slow down", transient=True
             ),
         )
-        monkeypatch.setattr("excerpt.llm.run", lambda entries, art, dict_slug="": entries)
+        monkeypatch.setattr(
+            "excerpt.llm.run", lambda entries, art, dict_slug="", **kw: entries
+        )
 
         source = tmp_path / "s.md"
         source.write_text(SAMPLE, encoding="utf-8")
@@ -381,7 +442,9 @@ class TestLlmPreflight:
             raise AssertionError("preflight must be skipped")
 
         monkeypatch.setattr("excerpt.cli.check_llm_config", explode)
-        monkeypatch.setattr("excerpt.llm.run", lambda entries, art, dict_slug="": entries)
+        monkeypatch.setattr(
+            "excerpt.llm.run", lambda entries, art, dict_slug="", **kw: entries
+        )
 
         source = tmp_path / "s.md"
         source.write_text(SAMPLE, encoding="utf-8")

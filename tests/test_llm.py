@@ -19,7 +19,7 @@ from common.config import (
     SOURCE_LLM,
     BoldEntry,
 )
-from excerpt import llm, llm_format, llm_reasoning
+from excerpt import llm, llm_cache, llm_format, llm_reasoning
 
 
 @pytest.fixture(autouse=True)
@@ -721,3 +721,96 @@ class TestErrorSummary:
     def test_no_status_degrades_gracefully(self):
         summary = llm._summarize_error(ValueError("something odd"))
         assert summary == "request failed"
+
+
+class TestLlmCacheIntegration:
+    """The stage consults and fills the cache when one is handed to it."""
+
+    def test_a_second_run_makes_no_requests(self, tmp_path, capsys):
+        entries = [make_entry(f"phrase {i}", "phrase") for i in range(3)]
+        cache = llm_cache.LlmCache("m", tmp_path / "c.json")
+
+        first = FakeClient([GOOD_REPLY] * 3)
+        llm.complete_entries(entries, client=first, model="m", cache=cache)
+        assert len(first.recorder) == 3
+
+        # A brand-new client, so any request at all would be visible.
+        entries2 = [make_entry(f"phrase {i}", "phrase") for i in range(3)]
+        second = FakeClient([])
+        llm.complete_entries(entries2, client=second, model="m", cache=cache)
+
+        assert second.recorder == []
+        assert cache.hits == 3
+        assert all(entry.code == CODE_OK for entry in entries2)
+        out = capsys.readouterr().out
+        assert out.count(": ok (cache)") == 3
+
+    def test_a_fresh_success_is_reported_without_the_marker(self, capsys):
+        cache = llm_cache.LlmCache("m", None)
+        cache.enabled = False  # isolate the formatting from any real store
+        llm.complete_entries(
+            [make_entry()], client=FakeClient([GOOD_REPLY]), model="m", cache=cache
+        )
+        out = capsys.readouterr().out
+        assert ": ok" in out
+        assert "(cache)" not in out
+
+    def test_a_failure_is_not_cached(self, tmp_path):
+        cache = llm_cache.LlmCache("m", tmp_path / "c.json")
+        entry = make_entry()
+        client = FakeClient([RuntimeError("HTTP 500 boom")])
+
+        llm.complete_entries([entry], client=client, model="m", cache=cache)
+        assert len(cache) == 0
+        # The record stays pending so a later run may succeed: a failed
+        # request must never be frozen into the cache.
+        assert entry.source == SOURCE_EXTRACTOR
+        assert entry.code != CODE_OK
+        assert entry.detail
+
+    def test_cache_hit_skips_the_request_entirely(self, tmp_path):
+        cache = llm_cache.LlmCache("m", tmp_path / "c.json")
+        entry = make_entry()
+        llm.complete_entries(
+            [entry], client=FakeClient([GOOD_REPLY]), model="m", cache=cache
+        )
+
+        # A client with no canned replies would raise if called at all.
+        entry2 = make_entry()
+        caller = FakeClient([])
+        llm.complete_entries([entry2], client=caller, model="m", cache=cache)
+        assert caller.recorder == []
+        assert entry2.entry is not None
+
+    def test_concurrent_hits_keep_the_log_ordered(self, tmp_path, capsys):
+        cache = llm_cache.LlmCache("m", tmp_path / "c.json")
+        llm.complete_entries(
+            [make_entry(f"p{i}", "phrase") for i in range(4)],
+            client=FakeClient([GOOD_REPLY] * 4),
+            model="m",
+            cache=cache,
+        )
+        capsys.readouterr()  # discard the first run's output
+
+        entries = [make_entry(f"p{i}", "phrase") for i in range(4)]
+        llm.complete_entries(
+            entries, client=FakeClient([]), model="m", cache=cache, workers=4
+        )
+        out = capsys.readouterr().out
+        positions = [out.index(f"[llm {i}/4]") for i in range(1, 5)]
+        assert positions == sorted(positions)
+
+    def test_an_empty_payload_is_still_served_from_cache(self, tmp_path):
+        """A cached reply must be reused verbatim, not re-derived."""
+        cache = llm_cache.LlmCache("m", tmp_path / "c.json")
+        entry = make_entry()
+        llm.complete_entries(
+            [entry], client=FakeClient([GOOD_REPLY]), model="m", cache=cache
+        )
+
+        reused = make_entry()
+        llm.complete_entries(
+            [reused], client=FakeClient([]), model="m", cache=cache
+        )
+        assert reused.entry == entry.entry
+

@@ -205,7 +205,26 @@ def main(argv: list[str] | None = None) -> int:
     # 3. LLM completion (opt-in)
     # ------------------------------------------------------------------
     if config.get_use_llm():
-        entries = llm.run(entries, art, dict_slug=dict_slug)
+        from common.config import get_openai_settings
+
+        from . import llm_cache
+
+        cache_path = (
+            str(args.llm_cache_path) if args.llm_cache_path else None
+        )
+        llm_cache_store = llm_cache.LlmCache(
+            get_openai_settings()[2],
+            path=cache_path,
+            enabled=not args.no_llm_cache,
+        )
+        entries = llm.run(
+            entries, art, dict_slug=dict_slug, cache=llm_cache_store
+        )
+        if llm_cache_store.enabled:
+            print(
+                f"[llm] cache: {llm_cache_store.hits} hit(s), "
+                f"{llm_cache_store.misses} miss(es)"
+            )
         print("[llm] completion stage finished")
     else:
         print("[llm] skipped (USE_LLM is off)")

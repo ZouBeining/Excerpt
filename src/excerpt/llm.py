@@ -48,7 +48,7 @@ from common.config import (
 
 from lookup import write_json
 
-from . import llm_format, llm_reasoning
+from . import llm_cache, llm_format, llm_reasoning
 
 __all__ = ["SYSTEM_PROMPT", "complete_entries", "run", "schema_for"]
 
@@ -525,6 +525,7 @@ def complete_entries(
     model: str = "",
     use_schema: bool = True,
     workers: int | None = None,
+    cache: llm_cache.LlmCache | None = None,
 ) -> list[BoldEntry]:
     """Complete every pending non-word entry in place and return the list.
 
@@ -545,6 +546,10 @@ def complete_entries(
     With several workers the completions arrive out of order; the lines are
     still ordered by input position, because the ``ready`` buffer holds a
     finished record until every earlier one has been reported.
+
+    *cache*, when given, is consulted before every request and written after
+    every fresh success.  A hit costs no request at all and is reported as
+    ``ok (cache)`` so the source of the reply stays visible.
 
     ``use_schema`` is retained for backward compatibility only.  Setting it to
     ``False`` starts the dialect walk at its terminal entry, i.e. sends no
@@ -584,10 +589,21 @@ def complete_entries(
         start_index=0 if use_schema else len(llm_format.SCHEMA_CANDIDATES) - 1
     )
 
-    def _one(index: int, entry: BoldEntry) -> tuple[int, BoldEntry, dict | None, str]:
-        """Issue one request.  Deliberately free of any shared mutation."""
+    def _one(
+        index: int, entry: BoldEntry
+    ) -> tuple[int, BoldEntry, dict | None, str, bool]:
+        """Issue one request.  Deliberately free of any shared mutation.
+
+        The trailing flag marks a payload that came from the cache rather than
+        from a request, so the caller can say so and skip a pointless write.
+        """
         if breaker.tripped:
-            return (index, entry, None, "aborted")
+            return (index, entry, None, "aborted", False)
+        key = llm_cache.cache_key(entry.word, entry.type) if cache else ""
+        if cache is not None:
+            cached = cache.get(key)
+            if cached is not None:
+                return (index, entry, cached, "ok", True)
         while True:
             try:
                 payload = _request_completion(
@@ -603,47 +619,53 @@ def complete_entries(
                 )
             except LLMAbort as exc:
                 breaker.trip(exc)
-                return (index, entry, None, "fatal")
+                return (index, entry, None, "fatal", False)
             except ReasoningUnsupported:
                 # The endpoint does not know this field.  ``advance`` reports
                 # whether a further candidate is left to try.
                 if reasoning.advance():
                     continue
-                return (index, entry, None, "reasoning_unsupported")
+                return (index, entry, None, "reasoning_unsupported", False)
             except Exception as exc:  # noqa: BLE001 - one failure must not abort
                 reason = _summarize_error(exc)
                 if breaker.tripped:
-                    return (index, entry, None, "aborted")
+                    return (index, entry, None, "aborted", False)
                 breaker.record_failure()
                 return (
                     index,
                     entry,
                     None,
                     "aborted" if breaker.tripped else reason,
+                    False,
                 )
             else:
                 breaker.record_success()
                 reasoning.confirm()
-                return (index, entry, payload, "ok")
+                return (index, entry, payload, "ok", False)
 
     def _apply_result(
         index: int,
         entry: BoldEntry,
         payload: dict | None,
         status: str,
+        from_cache: bool = False,
     ) -> None:
         """Fold one settled result into its entry and report it.
 
         Called on the calling thread only, never from a worker: it is the one
         place that mutates ``entry`` and the one place that prints, so the two
-        cannot interleave with another record's.
+        cannot interleave with another record's.  It is also the only place
+        that writes the cache, for the same reason.
         """
         if status == "ok":
             entry.entry = _to_standard_entry(entry, payload)
             entry.code = CODE_OK
             entry.detail = ""
             entry.source = SOURCE_LLM
-            print(f"  [llm {index}/{total}] {entry.word!r}: ok")
+            suffix = " (cache)" if from_cache else ""
+            print(f"  [llm {index}/{total}] {entry.word!r}: ok{suffix}")
+            if cache is not None and not from_cache:
+                cache.put(llm_cache.cache_key(entry.word, entry.type), payload)
         elif status == "aborted":
             print(f"  [llm {index}/{total}] {entry.word!r}: skipped (aborted)")
         elif status == "fatal":
@@ -662,7 +684,7 @@ def complete_entries(
         # but the printed lines must stay in input order.  ``ready`` holds
         # finished results until every earlier position has been reported;
         # ``next_index`` is the position the next line must carry.
-        ready: dict[int, tuple[BoldEntry, dict | None, str]] = {}
+        ready: dict[int, tuple[BoldEntry, dict | None, str, bool]] = {}
         next_index = 1
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
@@ -670,25 +692,29 @@ def complete_entries(
                 for index, entry in enumerate(targets, start=1)
             }
             for future in as_completed(futures):
-                index, entry, payload, status = future.result()
+                index, entry, payload, status, from_cache = future.result()
                 if index == next_index:
                     # In order: emit immediately, then drain whatever the
                     # buffer can now unblock.
-                    _apply_result(index, entry, payload, status)
+                    _apply_result(index, entry, payload, status, from_cache)
                     next_index += 1
                     while next_index in ready:
-                        buffered_entry, buffered_payload, buffered_status = (
-                            ready.pop(next_index)
-                        )
+                        (
+                            buffered_entry,
+                            buffered_payload,
+                            buffered_status,
+                            buffered_cache,
+                        ) = ready.pop(next_index)
                         _apply_result(
                             next_index,
                             buffered_entry,
                             buffered_payload,
                             buffered_status,
+                            buffered_cache,
                         )
                         next_index += 1
                 else:
-                    ready[index] = (entry, payload, status)
+                    ready[index] = (entry, payload, status, from_cache)
 
     if breaker.tripped:
         # Report once, on the calling thread, so the reason is not buried
@@ -704,11 +730,24 @@ def run(
     art: Artifacts,
     *,
     dict_slug: str = "",
+    cache: llm_cache.LlmCache | None = None,
 ) -> list[BoldEntry]:
-    """Run the LLM stage and rewrite ``.words.json`` / ``.errors.json``."""
+    """Run the LLM stage and rewrite ``.words.json`` / ``.errors.json``.
+
+    *cache* is supplied by the CLI, which owns the ``--no-llm-cache`` and
+    ``--llm-cache-path`` switches.  Omitting it means "do not cache" — this
+    function never opens ``~/.cache`` on its own, so a library caller gets no
+    hidden file side effect.
+
+    The cache is saved before the JSON documents are rewritten: the
+    completions are the part that cost money, and one late failure in the
+    bookkeeping must not discard them.
+    """
     from common.config import get_dict_slug
 
-    resolved = complete_entries(entries)
+    resolved = complete_entries(entries, cache=cache)
+    if cache is not None:
+        cache.save()
 
     out_dir = Path(art.out_dir)
     write_json.write_documents(

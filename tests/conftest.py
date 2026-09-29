@@ -34,6 +34,7 @@ def isolated_env(monkeypatch, tmp_path):
         "OPENAI_MODEL",
         "OUTPUT_DIR",
         "EXCERPT_CACHE_PATH",
+        "EXCERPT_CACHE_DIR",
         "TIMEOUT",
         "RETRY",
         "DELAY",
@@ -49,6 +50,10 @@ def isolated_env(monkeypatch, tmp_path):
     # ``configure`` loads a .env file; keep the developer's real one out by
     # passing an explicit empty path, which means "no .env at all".
     monkeypatch.setenv("EXCERPT_CACHE_PATH", str(tmp_path / "cache.json"))
+    # The LLM completion cache and the preflight verdict default to
+    # ``~/.cache/excerpt``; redirect both into the temporary directory so no
+    # test writes to (or reads from) the developer's real cache.
+    monkeypatch.setenv("EXCERPT_CACHE_DIR", str(tmp_path / "cachedir"))
     config.configure(dict_choice="MW", use_llm=False, env_path="")
     # The reasoning- and dialect-probe verdicts are module-level caches, so
     # they must not leak from one test into the next.
