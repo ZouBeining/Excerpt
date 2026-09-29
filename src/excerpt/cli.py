@@ -28,6 +28,7 @@ from common.config import (
 from . import llm, write_md
 from .arg import build_parser
 from .extractor import extract_bold_entries, write_index
+from .llm_check import check_llm_config
 
 
 def _resolve_out_dir(args, title: str, source: Path) -> Path:
@@ -40,6 +41,45 @@ def _resolve_out_dir(args, title: str, source: Path) -> Path:
         return Path(configured)
 
     return source.parent / default_out_dir_name(title)
+
+
+def _preflight_llm(args) -> int:
+    """Verify the LLM configuration before the pipeline spends any work.
+
+    Returns ``0`` when it is safe to continue, otherwise a non-zero exit code
+    after printing a single ``[error]`` line, exactly as the CLI contract
+    requires.  Skipped entirely when the LLM stage is off or disabled.
+
+    A *transient* failure (the endpoint answered 429/5xx) means the
+    configuration itself is fine but the provider cannot serve it right now.
+    That must not abort the run: a busy free tier would otherwise block every
+    invocation.  It is reported as a warning and the pipeline continues.
+    """
+    if not config.get_use_llm() or args.no_llm_check:
+        return 0
+
+    result = check_llm_config(use_cache=not args.no_cache)
+    if result.ok:
+        origin = "cached" if result.cached else "verified"
+        print(f"[llm] configuration {origin}: ok")
+        if result.transient:
+            print(
+                f"[warn] LLM endpoint is temporarily unavailable "
+                f"({result.code}): {result.reason}"
+            )
+            print(
+                "[warn] continuing anyway; the LLM stage may fall back to "
+                "errors for uncompleted entries."
+            )
+        return 0
+
+    print(f"[error] LLM configuration is not usable: {result.reason}", file=sys.stderr)
+    print(
+        "[error] check OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL, "
+        "or run with --no-llm to skip the LLM stage.",
+        file=sys.stderr,
+    )
+    return 3
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,6 +107,12 @@ def main(argv: list[str] | None = None) -> int:
     if not source.is_file():
         print(f"[error] Source file doesn't exist: {source}", file=sys.stderr)
         return 1
+
+    # Validate the LLM configuration up front: failing here costs one probe
+    # request, whereas failing mid-pipeline would waste the whole run.
+    exit_code = _preflight_llm(args)
+    if exit_code:
+        return exit_code
 
     # `{title}`: the CLI value, else the file stem, reduced to lowercase ASCII.
     title = normalize_title(args.title or source.stem)

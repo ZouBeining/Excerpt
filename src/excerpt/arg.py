@@ -143,4 +143,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Never call the LLM (overrides USE_LLM from the environment)",
     )
+    parser.add_argument(
+        "--no-llm-check",
+        action="store_true",
+        help=(
+            "Skip the preflight validation of the LLM configuration "
+            "(default: validate before the pipeline runs)"
+        ),
+    )
     return parser
