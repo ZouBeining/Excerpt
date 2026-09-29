@@ -220,6 +220,102 @@ class TestPipeline:
         assert called == []
 
 
+class TestLlmPreflight:
+    """The preflight must run before the pipeline and gate the exit code."""
+
+    def test_preflight_passes_when_config_is_valid(
+        self, tmp_path, stub_lookup, monkeypatch, capsys
+    ):
+        from excerpt.llm_check import CheckResult
+
+        monkeypatch.setattr(
+            "excerpt.cli.check_llm_config",
+            lambda **kwargs: CheckResult(ok=True, code="OK", status=200),
+        )
+        monkeypatch.setattr("excerpt.llm.run", lambda entries, art, dict_slug="": entries)
+
+        source = tmp_path / "s.md"
+        source.write_text(SAMPLE, encoding="utf-8")
+        rc = cli.main(
+            [str(source), "-o", str(tmp_path / "out"), "--use-llm", "--no-latex"]
+        )
+        assert rc == 0
+        assert "configuration verified: ok" in capsys.readouterr().out
+
+    def test_preflight_aborts_on_invalid_config(
+        self, tmp_path, stub_lookup, monkeypatch, capsys
+    ):
+        from excerpt.llm_check import CheckResult
+
+        monkeypatch.setattr(
+            "excerpt.cli.check_llm_config",
+            lambda **kwargs: CheckResult(
+                ok=False, code="INVALID_API_KEY", reason="401 rejected"
+            ),
+        )
+        ran: list = []
+        monkeypatch.setattr(
+            "excerpt.llm.run", lambda *a, **k: ran.append(1) or a[0]
+        )
+
+        source = tmp_path / "s.md"
+        source.write_text(SAMPLE, encoding="utf-8")
+        rc = cli.main(
+            [str(source), "-o", str(tmp_path / "out"), "--use-llm", "--no-latex"]
+        )
+        captured = capsys.readouterr()
+        assert rc == 3
+        assert "[error]" in captured.err
+        assert ran == [], "no stage may run after a failed preflight"
+        assert not (tmp_path / "out" / "s.index.json").exists()
+
+    def test_preflight_warns_but_continues_when_transient(
+        self, tmp_path, stub_lookup, monkeypatch, capsys
+    ):
+        from excerpt.llm_check import CheckResult
+
+        monkeypatch.setattr(
+            "excerpt.cli.check_llm_config",
+            lambda **kwargs: CheckResult(
+                ok=True, code="RATE_LIMITED", reason="slow down", transient=True
+            ),
+        )
+        monkeypatch.setattr("excerpt.llm.run", lambda entries, art, dict_slug="": entries)
+
+        source = tmp_path / "s.md"
+        source.write_text(SAMPLE, encoding="utf-8")
+        rc = cli.main(
+            [str(source), "-o", str(tmp_path / "out"), "--use-llm", "--no-latex"]
+        )
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "[warn]" in captured.out
+        assert (tmp_path / "out" / "s.index.json").is_file()
+
+    def test_no_llm_check_flag_skips_the_probe(
+        self, tmp_path, stub_lookup, monkeypatch
+    ):
+        def explode(**kwargs):  # pragma: no cover - must never run
+            raise AssertionError("preflight must be skipped")
+
+        monkeypatch.setattr("excerpt.cli.check_llm_config", explode)
+        monkeypatch.setattr("excerpt.llm.run", lambda entries, art, dict_slug="": entries)
+
+        source = tmp_path / "s.md"
+        source.write_text(SAMPLE, encoding="utf-8")
+        rc = cli.main(
+            [
+                str(source),
+                "-o",
+                str(tmp_path / "out"),
+                "--use-llm",
+                "--no-llm-check",
+                "--no-latex",
+            ]
+        )
+        assert rc == 0
+
+
 class TestConfigurationPriority:
     def test_cli_beats_env(self, monkeypatch, tmp_path):
         env_file = tmp_path / ".env"

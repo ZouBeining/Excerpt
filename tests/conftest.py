@@ -81,12 +81,28 @@ class StubSession:
         self.closed = False
 
     def get(self, url, params=None, timeout=None):
-        self.calls.append({"url": url, "params": params, "timeout": timeout})
+        self.calls.append({"method": "GET", "url": url, "params": params, "timeout": timeout})
         if self.error is not None:
             raise self.error
         if self.responses:
             return self.responses.pop(0)
         return StubResponse([])
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.calls.append(
+            {
+                "method": "POST",
+                "url": url,
+                "json": json,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        if self.responses:
+            return self.responses.pop(0)
+        return StubResponse({"ok": True})
 
     def close(self):
         self.closed = True

@@ -207,3 +207,36 @@ class TestSettings:
         schema = llm.schema_for()
         assert schema["type"] == "object"
         assert "definition" in schema["required"]
+
+
+class TestErrorSummary:
+    """Provider errors must be reduced to one actionable line."""
+
+    def test_openrouter_wrapper_is_unwrapped(self):
+        exc = RuntimeError(
+            "Error code: 429 - {'error': {'message': 'Provider returned error', "
+            "'code': 429, 'metadata': {'raw': 'google/gemma-4-31b-it:free is "
+            "temporarily rate-limited upstream. Please retry shortly', "
+            "'provider_name': 'Google AI Studio'}}}"
+        )
+        summary = llm._summarize_error(exc)
+        assert summary.startswith("HTTP 429")
+        assert "rate-limited upstream" in summary
+        assert "user_id" not in summary
+
+    def test_nested_json_blob_is_skipped(self):
+        exc = RuntimeError(
+            "Error code: 400 - {'error': {'message': 'Provider returned error', "
+            "'metadata': {'raw': '{\\n  \"error\": {\\n    \"code\": 400,\\n    "
+            "\"message\": \"User location is not supported for the API use.\"\\n  }\\n}'}}}"
+        )
+        summary = llm._summarize_error(exc)
+        assert "HTTP 400" in summary
+
+    def test_plain_error_still_reports_status(self):
+        summary = llm._summarize_error(RuntimeError("Error code: 503 - boom"))
+        assert summary.startswith("HTTP 503")
+
+    def test_no_status_degrades_gracefully(self):
+        summary = llm._summarize_error(ValueError("something odd"))
+        assert summary == "request failed"
