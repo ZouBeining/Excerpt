@@ -1,4 +1,8 @@
-\documentclass[12pt, a4paper]{ctexart}
+%% fontset=none：禁止 ctexart 自动加载 ctex-fontset-windows.def。
+%% 该文件会把 sans 字族指到 SimHei，而 SimHei 并非每台 Windows 都安装，
+%% 缺失时会在正文首个汉字处直接编译失败。具体字体改由 preamble 用
+%% fontspec 显式声明（只依赖 SimSun）。
+\documentclass[12pt, a4paper, fontset=none]{ctexart}
 \input{preamble.excerpt}
 \usepackage{subfiles}
 

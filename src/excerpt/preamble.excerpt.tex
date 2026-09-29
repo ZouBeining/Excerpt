@@ -26,7 +26,10 @@
 \geometry{a4paper,margin=0.7cm}
 \geometry{twoside, bindingoffset=1cm}
 \linespread{1.1}
-\usepackage[UTF8]{ctex}
+%% fontset=none：不让 ctex 自动选择中文字体。ctex 的默认 fontset 会去加载
+%% SimHei 等并非每台机器都有的字体，一旦缺失就在正文首个汉字处直接编译失败。
+%% 这里改为下面用 fontspec 显式声明，只依赖稳定存在的 SimSun。
+\usepackage[UTF8,fontset=none]{ctex}
 \usepackage{fontspec}
 \usepackage{xcolor}
 % ulem 的 \uline 可以在行尾断开；normalem 保留 \emph 原本的斜体语义
@@ -34,11 +37,20 @@
 \usepackage{hyperref}
 
 %%-------------------------------------------------- 字体
+%% 只依赖 Windows 自带、且各版本都稳定存在的字体，避免在只装了
+%% 部分字体的机器上（例如没有 SimHei）直接编译失败。
+%% SimSun 覆盖正文与标题；sans 退回 SimSun，由 AutoFakeBold 保证粗体效果。
+%% 关闭 ctex 的字体选择后，四个中文字族都要显式给出，否则会退回 nullfont。
 \setmainfont{Times New Roman}
 \setsansfont{Arial}
 \setmonofont{Courier New}
 \setCJKmainfont{SimSun}[AutoFakeBold=2.0]
-\setCJKsansfont{SimHei}
+\setCJKsansfont{SimSun}[AutoFakeBold=2.0]
+\setCJKmonofont{SimSun}[AutoFakeBold=2.0]
+\setCJKfamilyfont{zhsong}{SimSun}[AutoFakeBold=2.0]
+\setCJKfamilyfont{zhhei}{SimSun}[AutoFakeBold=2.0]
+\setCJKfamilyfont{zhkai}{SimSun}[AutoFakeBold=2.0]
+\setCJKfamilyfont{zhfs}{SimSun}[AutoFakeBold=2.0]
 \pagestyle{plain}
 
 %%-------------------------------------------------- 配色
