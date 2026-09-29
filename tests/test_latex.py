@@ -231,3 +231,190 @@ class TestConsoleEntryPoint:
         rc = latex.main([str(tmp_path / "nope.json")])
         assert rc == 1
         assert "[error]" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Compilation
+# ---------------------------------------------------------------------------
+
+class TestFindXelatex:
+    def test_explicit_existing_path_is_used(self, tmp_path):
+        fake = tmp_path / "xelatex.exe"
+        fake.write_text("", encoding="utf-8")
+        assert latex.find_xelatex(fake) == str(fake)
+
+    def test_unknown_explicit_path_returns_none(self, tmp_path):
+        assert latex.find_xelatex(tmp_path / "nope.exe") is None
+
+    def test_path_lookup_is_consulted(self, monkeypatch):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: "/usr/bin/xelatex")
+        assert latex.find_xelatex() == "/usr/bin/xelatex"
+
+    def test_missing_everywhere_returns_none(self, monkeypatch):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: None)
+        monkeypatch.setattr(latex, "_XELATEX_FALLBACK_DIRS", ())
+        assert latex.find_xelatex() is None
+
+
+class TestCompileTex:
+    def test_skips_when_xelatex_is_absent(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: None)
+        monkeypatch.setattr(latex, "_XELATEX_FALLBACK_DIRS", ())
+        (tmp_path / "main.tex").write_text("", encoding="utf-8")
+
+        result = latex.compile_tex(tmp_path)
+        assert result["skipped"] is True
+        assert result["ok"] is False
+        assert result["pdf"] is None
+        assert "xelatex not found" in result["reason"]
+
+    def test_reports_a_missing_main_tex(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: "/bin/xelatex")
+        result = latex.compile_tex(tmp_path)
+        assert result["ok"] is False
+        assert "main.tex not found" in result["reason"]
+
+    def test_runs_two_passes_and_returns_the_pdf(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: "/bin/xelatex")
+        (tmp_path / "main.tex").write_text("", encoding="utf-8")
+        calls = []
+
+        class Done:
+            returncode = 0
+            stdout = b"ok"
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            (tmp_path / "main.pdf").write_bytes(b"%PDF-1.5")
+            return Done()
+
+        monkeypatch.setattr(latex.subprocess, "run", fake_run)
+        result = latex.compile_tex(tmp_path)
+
+        assert result["ok"] is True
+        assert result["passes"] == 2
+        assert len(calls) == 2
+        assert result["pdf"].endswith("main.pdf")
+        # Non-interactive invocation: a failure must not block on stdin.
+        assert "-interaction=nonstopmode" in calls[0]
+
+    def test_stops_after_the_first_failing_pass(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: "/bin/xelatex")
+        (tmp_path / "main.tex").write_text("", encoding="utf-8")
+        calls = []
+
+        class Done:
+            returncode = 1
+            stdout = b"! Undefined control sequence."
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return Done()
+
+        monkeypatch.setattr(latex.subprocess, "run", fake_run)
+        result = latex.compile_tex(tmp_path)
+
+        assert result["ok"] is False
+        assert len(calls) == 1
+        assert "Undefined control sequence" in result["reason"]
+
+    def test_timeout_is_reported_not_raised(self, tmp_path, monkeypatch):
+        import subprocess as real_subprocess
+
+        monkeypatch.setattr(latex.shutil, "which", lambda name: "/bin/xelatex")
+        (tmp_path / "main.tex").write_text("", encoding="utf-8")
+
+        def fake_run(argv, **kwargs):
+            raise real_subprocess.TimeoutExpired(cmd=argv, timeout=1)
+
+        monkeypatch.setattr(latex.subprocess, "run", fake_run)
+        result = latex.compile_tex(tmp_path)
+
+        assert result["ok"] is False
+        assert "could not run xelatex" in result["reason"]
+
+
+class TestBuildWithCompile:
+    def test_build_stays_tex_only_by_default(self, tmp_path):
+        result = latex.build([], title="t", tex_dir=tmp_path)
+        assert result["pdf"] is None
+        assert result["compile"] is None
+
+    def test_build_compiles_when_asked(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: "/bin/xelatex")
+
+        class Done:
+            returncode = 0
+            stdout = b"ok"
+
+        def fake_run(argv, **kwargs):
+            (tmp_path / "main.pdf").write_bytes(b"%PDF-1.5")
+            return Done()
+
+        monkeypatch.setattr(latex.subprocess, "run", fake_run)
+        result = latex.build([], title="t", tex_dir=tmp_path, compile_pdf=True)
+
+        assert result["pdf"] is not None
+        assert result["compile"]["ok"] is True
+
+    def test_missing_xelatex_does_not_break_the_tex_output(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: None)
+        monkeypatch.setattr(latex, "_XELATEX_FALLBACK_DIRS", ())
+        result = latex.build([], title="t", tex_dir=tmp_path, compile_pdf=True)
+
+        # The .tex files must still exist even though no PDF was produced.
+        assert Path(result["main"]).is_file()
+        assert Path(result["unit"]).is_file()
+        assert result["pdf"] is None
+        assert result["compile"]["skipped"] is True
+
+
+class TestConsoleCompileFlag:
+    def _source(self, tmp_path):
+        payload = [
+            {
+                "word": "director",
+                "type": "word",
+                "sentence": "the **director**",
+                "line": 1,
+                "code": 0,
+                "entry": {"senses": []},
+            }
+        ]
+        source = tmp_path / "test.mw.words.json"
+        source.write_text(json.dumps(payload), encoding="utf-8")
+        return source
+
+    def test_compile_flag_produces_a_pdf(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: "/bin/xelatex")
+
+        class Done:
+            returncode = 0
+            stdout = b"ok"
+
+        def fake_run(argv, **kwargs):
+            (tmp_path / "out" / "main.pdf").write_bytes(b"%PDF-1.5")
+            return Done()
+
+        monkeypatch.setattr(latex.subprocess, "run", fake_run)
+        rc = latex.main(
+            [str(self._source(tmp_path)), "-o", str(tmp_path / "out"), "--compile"]
+        )
+
+        assert rc == 0
+        assert "[pdf]" in capsys.readouterr().out
+
+    def test_compile_flag_reports_a_missing_tool(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(latex.shutil, "which", lambda name: None)
+        monkeypatch.setattr(latex, "_XELATEX_FALLBACK_DIRS", ())
+        rc = latex.main(
+            [str(self._source(tmp_path)), "-o", str(tmp_path / "out"), "--compile"]
+        )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "skipped compilation" in out

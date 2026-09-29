@@ -269,6 +269,22 @@ class TestDictionaryExtensibility:
         with pytest.raises(KeyError):
             config.get_dict_config("nope")
 
+    def test_blank_choice_falls_back_to_the_active_one(self):
+        """``""`` means "no explicit choice", not "an invalid choice"."""
+        config.configure(dict_choice="FD", env_path="")
+        assert config.get_dict_config("") is config.get_dict_config()
+        assert config.get_dict_slug("") == "fd"
+        assert config.get_dict_slug("   ") == "fd"
+
+    def test_artifacts_accept_an_empty_slug(self, tmp_path):
+        """A caller without a slug must not be rejected."""
+        from common.config import artifacts
+
+        config.configure(dict_choice="MW", env_path="")
+        art = artifacts("doc", "", str(tmp_path))
+        assert art.dict_slug == "mw"
+        assert art.words_json == "doc.mw.words.json"
+
     def test_configure_rejects_an_unknown_choice(self):
         with pytest.raises(ValueError):
             config.configure(dict_choice="nope", env_path="")
