@@ -1,6 +1,6 @@
 [project]
 name = "excerpt"
-version = "0.1.1"
+version = "0.1.2"
 description = "Extract bolded words from a Markdown file, look them up in a dictionary (or complete them with an LLM), and render a LaTeX vocabulary handout."
 readme = "README.md"
 requires-python = ">=3.12"

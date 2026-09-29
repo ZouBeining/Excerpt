@@ -55,6 +55,8 @@ cp .env.example .env
 | `DICT_API_KEY` | 词典 API Key；`MW` 必填，`FD` 不需要 | 空 |
 | `OUTPUT_DIR` | 输出目录 | `.{title}_out` |
 | `EXCERPT_CACHE_PATH` | 缓存文件路径 | `~/.cache/excerpt/<slug>.cache.json` |
+| `COMPILE_LATEX` | 是否把 `.tex` 编译成 PDF（`True`/`False`） | `False` |
+| `XELATEX` | `xelatex` 可执行文件路径（不在 PATH 时用） | 自动探测 |
 | `USE_LLM` | 是否用 LLM 补全非单词条目（`True`/`False`） | `False` |
 | `OPENAI_API_KEY` | OpenAI 兼容接口的 Key | 空 |
 | `OPENAI_BASE_URL` | 接口地址（不要硬编码 `api.openai.com`） | 空 |
@@ -90,6 +92,9 @@ excerpt notes.md --use-llm
 # 只要 Markdown，不要 LaTeX
 excerpt notes.md --no-latex
 
+# 生成 .tex 后顺手编译成 PDF（需先装好 MiKTeX / TeX Live）
+excerpt notes.md --compile
+
 # 忽略缓存，强制重新联网查询
 excerpt notes.md --no-cache
 ```
@@ -114,6 +119,8 @@ excerpt notes.md --no-cache
 | `--no-lemma` | 关闭 LemmInflect 原形还原 |
 | `--no-lookup` | 跳过词典查询（**不影响 LLM 阶段**） |
 | `--no-latex` | 不生成 LaTeX |
+| `--compile` / `--no-compile` | 是否把 `.tex` 编译成 PDF（互斥），覆盖 `COMPILE_LATEX` |
+| `--xelatex` | 手动指定 `xelatex` 可执行文件路径 |
 
 ### 关于 `{title}`
 
@@ -157,7 +164,22 @@ excerpt notes.md --no-cache
 
 ### 编译 LaTeX
 
-程序**只生成 `.tex`，不自动编译**（需要本机装有 TeX 发行版，含 `xelatex`）：
+默认**只生成 `.tex`，不编译**。加上 `--compile` 就会自动调用 `xelatex` 编译成 PDF：
+
+```bash
+excerpt notes.md --compile                 # 生成 .tex 并编译出 main.pdf
+excerpt notes.md --no-compile              # 强制不编译（覆盖 .env 的 COMPILE_LATEX）
+excerpt notes.md --compile --xelatex "E:\MiKTeX\miktex\bin\x64\xelatex.exe"
+```
+
+编译会自动跑**两遍**（第二次以正确生成目录与交叉引用），使用
+`-interaction=nonstopmode -halt-on-error`，因此缺字等错误不会卡住等待输入。
+
+`xelatex` 的查找顺序：`--xelatex` 指定 → `PATH` → `.env` 的 `XELATEX` →
+常见 MiKTeX / TeX Live 安装目录。**找不到 `xelatex` 不会让整个流程失败**：
+`.tex` 照常生成，只在日志里提示跳过编译。
+
+想手动编译也可以：
 
 ```bash
 cd .test_out
@@ -165,14 +187,13 @@ xelatex main.tex
 xelatex main.tex        # 跑两遍以正确生成目录 / 交叉引用
 ```
 
-未安装 `xelatex` 时，`.tex` 文件仍然会正常生成，只是无法本地编译成 PDF。
-
 ### 单独使用 LaTeX 入口
 
 已有一份 `.words.json` 或 `.md`，想直接转 LaTeX：
 
 ```bash
 excerpt-latex .test_out/test.mw.words.json
+excerpt-latex .test_out/test.mw.words.json --compile    # 顺便编译出 PDF
 ```
 
 ---
@@ -210,7 +231,7 @@ pytest                                   # 已激活虚拟环境时
 .venv/Scripts/python.exe -m pytest       # Windows 直接指定解释器
 ```
 
-预期结果：**153 passed**。
+预期结果：**169 passed**。
 
 ### 2. 常用测试命令
 
@@ -242,8 +263,8 @@ pytest -x                                   # 首个失败即停
 | `test_lookup.py` | 44 | 缓存读写、HTTP 重试与分类、MW markup 清洗、MW 数据映射、写 JSON |
 | `test_llm.py` | 16 | 提示词构造、schema 校验、幂等跳过已 filled 记录 |
 | `test_write_md.py` | 11 | 笔记 / 索引渲染、表头统计 |
-| `test_latex.py` | 35 | LaTeX 转义（含反斜杠）、条目渲染、文件布局 |
-| `test_cli.py` | 28 | 参数解析、优先级、输出目录解析、各阶段编排 |
+| `test_latex.py` | 49 | LaTeX 转义、条目渲染、文件布局、`xelatex` 查找与编译（含缺工具回退） |
+| `test_cli.py` | 30 | 参数解析、优先级、输出目录解析、各阶段编排 |
 
 > Windows 上 pytest 清理临时目录时可能打印 `safe-delete ... trash-failed` 警告，
 > 这是系统回收站机制的限制，**不影响测试结果**，可忽略。
@@ -261,10 +282,14 @@ excerpt tests/test.md -o .scratch/real --no-llm
 
 # C. 用免费词典，无需 Key
 excerpt tests/test.md -o .scratch/free --dict-choice FD --no-llm
+
+# D. 验证 LaTeX 编译链路（需已装 MiKTeX / TeX Live）
+excerpt tests/test.md -o .scratch/pdf --no-lookup --no-llm --compile
 ```
 
 检查 `.scratch/*/test.mw.md` 是否有释义、`test.mw.words.json` 的
-`dict` 字段是否为当前 slug、`errors.json` 的计数器是否正确。
+`dict` 字段是否为当前 slug、`errors.json` 的计数器是否正确；
+D 用例还应得到 `main.pdf`，且 `main.log` 中不含以 `!` 开头的错误行。
 
 ### 5. 新增词典时的测试
 
@@ -300,7 +325,7 @@ src/
     lemmatizer.py           # LemmInflect 原形还原
     mw_api.py  mw_data.py  mw_markup.py     # Merriam-Webster
     fd_api.py  fd_data.py                   # Free Dictionary
-tests/                      # 153 个离线测试
+tests/                      # 169 个离线测试
 docs/                       # JSON / Markdown 模板与 API 返回示例
 ```
 
