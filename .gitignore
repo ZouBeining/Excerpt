@@ -19,3 +19,14 @@ wheels/
 
 # .trash
 .trash/
+
+# Generated output directories and LaTeX build artifacts
+.*_out/
+.scratch/
+out/
+excerpt-demo.pdf
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
