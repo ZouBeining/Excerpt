@@ -18,7 +18,17 @@ from common.config import (
     SOURCE_LLM,
     BoldEntry,
 )
-from excerpt import llm
+from excerpt import llm, llm_reasoning
+
+
+@pytest.fixture(autouse=True)
+def no_retry_sleep(monkeypatch):
+    """Keep the retry backoff from costing the suite real wall-clock time.
+
+    The backoff itself is asserted in the tests that care; everywhere else it
+    is stubbed out so a failing-record test does not sleep for seconds.
+    """
+    monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
 
 
 def make_entry(word="returning your call", type_="phrase", code=CODE_NOT_A_SINGLE_WORD):
@@ -159,9 +169,13 @@ class TestCompletion:
 
     def test_persistent_failure_leaves_the_entry_alone(self):
         entry = make_entry()
-        client = FakeClient(["junk", "junk again"])
+        # Enough failures to exhaust the default retry budget (3 retries + 1).
+        client = FakeClient(["junk"] * 4)
         llm.complete_entries([entry], client=client, model="m")
+        # A failure must leave ``code``/``source`` untouched: that is what keeps
+        # the record pending and retriable on the next run.
         assert entry.code == CODE_NOT_A_SINGLE_WORD
+        assert entry.source == SOURCE_EXTRACTOR
         assert entry.detail
 
 
@@ -207,6 +221,241 @@ class TestSettings:
         schema = llm.schema_for()
         assert schema["type"] == "object"
         assert "definition" in schema["required"]
+
+
+class TestRequestParameters:
+    """The request must carry the LLM's own timeout and a token ceiling."""
+
+    def test_completion_sends_timeout_and_token_ceiling(self):
+        entry = make_entry()
+        client = FakeClient([GOOD_REPLY])
+        llm.complete_entries([entry], client=client, model="m")
+
+        sent = client.recorder[0]
+        assert sent["timeout"] == 60.0
+        assert sent["max_tokens"] == llm.MAX_COMPLETION_TOKENS
+
+    def test_timeout_follows_the_configured_value(self):
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_timeout=7.5
+        )
+        entry = make_entry()
+        client = FakeClient([GOOD_REPLY])
+        llm.complete_entries([entry], client=client, model="m")
+        assert client.recorder[0]["timeout"] == 7.5
+
+    def test_retry_budget_follows_the_configured_value(self):
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_retries=1
+        )
+        entry = make_entry()
+        # 1 retry means 2 attempts; both fail.
+        client = FakeClient(["junk", "junk"])
+        llm.complete_entries([entry], client=client, model="m")
+        assert len(client.recorder) == 2
+
+    def test_client_is_built_with_a_timeout_and_no_sdk_retries(self, monkeypatch):
+        """The SDK's own retrying would multiply with this module's loop."""
+        captured: dict = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("openai.OpenAI", FakeOpenAI)
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        config.configure(dict_choice="MW", use_llm=True, env_path="")
+
+        llm._create_client()
+
+        assert captured["timeout"] == 60.0
+        assert captured["max_retries"] == 0
+
+
+class TestBackoff:
+    """Retries must pause, and never pause before the first attempt."""
+
+    def test_no_sleep_before_the_first_attempt(self, monkeypatch):
+        sleeps: list[float] = []
+        monkeypatch.setattr(llm.time, "sleep", sleeps.append)
+
+        llm.complete_entries([make_entry()], client=FakeClient([GOOD_REPLY]), model="m")
+
+        assert sleeps == []
+
+    def test_backoff_grows_linearly(self, monkeypatch):
+        sleeps: list[float] = []
+        monkeypatch.setattr(llm.time, "sleep", sleeps.append)
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_backoff=0.25
+        )
+
+        client = FakeClient(["junk", "junk", GOOD_REPLY])
+        llm.complete_entries([make_entry()], client=client, model="m")
+
+        assert sleeps == [0.25, 0.5]
+
+
+class TestErrorClassification:
+    def test_auth_statuses_are_fatal(self):
+        for status in (401, 403):
+            exc = RuntimeError(f"Error code: {status} - nope")
+            assert llm._classify_llm_error(exc) == "auth"
+
+    def test_transient_statuses_are_not_fatal(self):
+        assert llm._classify_llm_error(RuntimeError("Error code: 429 - slow")) == "rate_limit"
+        assert llm._classify_llm_error(RuntimeError("Error code: 503 - down")) == "server"
+        assert llm._classify_llm_error(TimeoutError("timeout")) == "network"
+        assert llm._classify_llm_error(ValueError("bad json")) == "bad_reply"
+
+    def test_extract_status_reads_the_sdk_marker(self):
+        assert llm._extract_status("Error code: 429 - x") == 429
+        assert llm._extract_status("no marker here") == 0
+
+
+class TestCircuitBreaker:
+    def test_auth_failure_aborts_the_batch_at_once(self):
+        first = make_entry("give up", "phrase")
+        second = make_entry("hold on", "phrase")
+        # Only one canned response: a second request would raise "no more
+        # canned responses", which is not the failure under test.
+        client = FakeClient([RuntimeError("Error code: 401 - bad key")])
+
+        llm.complete_entries([first, second], client=client, model="m")
+
+        assert len(client.recorder) == 1
+        # The untouched record must stay pending so a later run retries it.
+        assert second.code == CODE_NOT_A_SINGLE_WORD
+        assert second.source == SOURCE_EXTRACTOR
+
+    def test_consecutive_failures_abort_a_concurrent_run(self):
+        entries = [make_entry(f"phrase {i}", "phrase") for i in range(6)]
+        client = FakeClient([RuntimeError("Error code: 503 - down")] * 10)
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_retries=0
+        )
+
+        llm.complete_entries(entries, client=client, model="m", workers=4)
+
+        # The breaker trips after five consecutive failures, so the sixth
+        # record is never attempted.
+        assert len(client.recorder) == 5
+
+    def test_serial_run_does_not_trip_on_ordinary_failures(self):
+        """A few flaky records must not cost the rest of a serial run."""
+        entries = [make_entry(f"phrase {i}", "phrase") for i in range(6)]
+        client = FakeClient(
+            [RuntimeError("Error code: 503 - down")] * 5 + [GOOD_REPLY]
+        )
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_retries=0
+        )
+
+        llm.complete_entries(entries, client=client, model="m")
+
+        assert len(client.recorder) == 6
+        assert entries[-1].code == CODE_OK
+
+
+class TestConcurrency:
+    def test_workers_above_one_completes_every_record(self):
+        entries = [make_entry(f"phrase {i}", "phrase") for i in range(3)]
+        client = FakeClient([GOOD_REPLY] * 3)
+
+        llm.complete_entries(entries, client=client, model="m", workers=3)
+
+        assert len(client.recorder) == 3
+        assert all(entry.code == CODE_OK for entry in entries)
+        assert all(entry.source == SOURCE_LLM for entry in entries)
+
+    def test_logs_stay_in_input_order(self, capsys):
+        entries = [make_entry(f"phrase {i}", "phrase") for i in range(3)]
+        client = FakeClient([GOOD_REPLY] * 3)
+
+        llm.complete_entries(entries, client=client, model="m", workers=3)
+        out = capsys.readouterr().out
+
+        assert out.index("[llm 1/3]") < out.index("[llm 2/3]") < out.index("[llm 3/3]")
+
+    def test_workers_never_write_files(self, monkeypatch):
+        """Only the calling thread may touch .words.json / .errors.json."""
+        import lookup.write_json as write_json
+
+        def explode(*args, **kwargs):
+            raise AssertionError("a worker thread must not write files")
+
+        monkeypatch.setattr(write_json, "write_documents", explode)
+
+        entries = [make_entry(f"phrase {i}", "phrase") for i in range(3)]
+        client = FakeClient([GOOD_REPLY] * 3)
+        llm.complete_entries(entries, client=client, model="m", workers=3)
+
+    def test_workers_one_keeps_the_serial_path(self, monkeypatch):
+        class ExplodingPool:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("workers=1 must not spawn a thread pool")
+
+        monkeypatch.setattr(llm, "ThreadPoolExecutor", ExplodingPool)
+
+        llm.complete_entries(
+            [make_entry()], client=FakeClient([GOOD_REPLY]), model="m", workers=1
+        )
+
+
+class TestReasoningSuppression:
+    def test_a_rejected_dialect_falls_back_to_the_next_candidate(self):
+        entry = make_entry()
+        client = FakeClient(
+            [
+                RuntimeError("Error code: 400 - unknown parameter: reasoning"),
+                GOOD_REPLY,
+            ]
+        )
+
+        llm.complete_entries([entry], client=client, model="m")
+
+        assert entry.code == CODE_OK
+        # The first request carried candidate 0, the second a later candidate.
+        assert client.recorder[0]["extra_body"] == llm_reasoning.REASONING_CANDIDATES[0]
+        assert client.recorder[1]["extra_body"] != client.recorder[0]["extra_body"]
+
+    def test_an_explicit_override_is_sent_first(self):
+        config.configure(
+            dict_choice="MW",
+            use_llm=False,
+            env_path="",
+        )
+        # ``configure`` reads LLM_REASONING from the environment.
+        import os
+
+        os.environ["LLM_REASONING"] = '{"reasoning": {"effort": "low"}}'
+        config.configure(dict_choice="MW", use_llm=False, env_path="")
+        try:
+            entry = make_entry()
+            client = FakeClient([GOOD_REPLY])
+            llm.complete_entries([entry], client=client, model="m")
+            assert client.recorder[0]["extra_body"] == {
+                "reasoning": {"effort": "low"}
+            }
+        finally:
+            os.environ.pop("LLM_REASONING", None)
+
+    def test_none_is_sent_when_every_candidate_is_rejected(self):
+        config.configure(
+            dict_choice="MW", use_llm=False, env_path="", llm_retries=0
+        )
+        entry = make_entry()
+        rejects = [
+            RuntimeError(f"Error code: 400 - unknown parameter {i}")
+            for i in range(len(llm_reasoning.REASONING_CANDIDATES))
+        ]
+        client = FakeClient(rejects + [GOOD_REPLY])
+
+        llm.complete_entries([entry], client=client, model="m")
+
+        assert entry.code == CODE_OK
+        # The last resort sends no reasoning field at all.
+        assert "extra_body" not in client.recorder[-1]
 
 
 class TestErrorSummary:

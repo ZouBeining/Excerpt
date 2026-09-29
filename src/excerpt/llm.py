@@ -22,10 +22,13 @@ Etymology and first-use metadata are deliberately left empty.
 from __future__ import annotations
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from common.config import (
+    CODE_BAD_RESPONSE,
     CODE_OK,
     LLM_DICTIONARY_NAME,
     SOURCE_EXTRACTOR,
@@ -37,13 +40,44 @@ from common.config import (
     Artifacts,
     BoldEntry,
     empty_entry,
+    get_llm_settings,
     get_openai_settings,
     normalize_entry,
 )
 
 from lookup import write_json
 
+from . import llm_reasoning
+
 __all__ = ["SYSTEM_PROMPT", "complete_entries", "run", "schema_for"]
+
+
+#: Upper bound on the tokens a completion may spend.  A six-field structured
+#: reply needs a few hundred at most; the ceiling exists to stop a model that
+#: ignores the reasoning-suppression hints from running away on a runaway
+#: chain of thought.
+MAX_COMPLETION_TOKENS = 400
+
+#: How many ordinary failures in a row abort the whole stage.  A burst like
+#: this means the endpoint is down or throttling, not that one record is odd.
+CONSECUTIVE_FAILURE_LIMIT = 5
+
+
+class LLMAbort(RuntimeError):
+    """A fatal, non-retriable provider verdict (401/403).
+
+    Raised when the request was rejected on authentication or permission
+    grounds: retrying cannot help, so the entire batch is abandoned rather
+    than hammering the endpoint once per record.
+    """
+
+
+class ReasoningUnsupported(RuntimeError):
+    """The provider does not understand the current reasoning-suppression field.
+
+    Signals the caller to move on to the next candidate payload instead of
+    treating the failure as a genuine completion failure.
+    """
 
 
 SYSTEM_PROMPT = (
@@ -193,7 +227,18 @@ def _to_standard_entry(entry: BoldEntry, payload: dict[str, Any]) -> dict[str, A
 # ---------------------------------------------------------------------------
 
 def _create_client() -> Any:
-    """Create the OpenAI-compatible client from the shared settings."""
+    """Create the OpenAI-compatible client from the shared settings.
+
+    The client carries the LLM's own timeout, which is deliberately *not* the
+    dictionary stage's 20s: a reasoning model frequently needs longer before it
+    emits its first byte, and the SDK default of 600s would let one stalled
+    request block the pipeline for ten minutes.
+
+    ``max_retries=0`` disables the SDK's built-in retrying on purpose.  It would
+    otherwise multiply with this module's own retry loop, turning a configured
+    "3 retries" into up to nine requests and stacking two independent timeouts.
+    Retrying is owned here, so the logs stay explainable.
+    """
     from openai import OpenAI
 
     api_key, base_url, _model = get_openai_settings()
@@ -201,7 +246,12 @@ def _create_client() -> Any:
         raise RuntimeError(
             "OPENAI_API_KEY is not set but USE_LLM is enabled."
         )
-    kwargs: dict[str, Any] = {"api_key": api_key}
+    llm = get_llm_settings()
+    kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "timeout": llm["timeout"],
+        "max_retries": 0,
+    }
     if base_url:
         kwargs["base_url"] = base_url
     return OpenAI(**kwargs)
@@ -213,9 +263,25 @@ def _request_completion(
     model: str,
     entry: BoldEntry,
     use_schema: bool,
-    attempts: int = 2,
+    attempts: int = 4,
+    timeout: float = 60.0,
+    backoff: float = 0.5,
+    extra_body: dict[str, Any] | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
-    """Ask the provider once (with one retry) and return the validated reply."""
+    """Ask the provider, retrying transient failures with linear backoff.
+
+    Retry policy:
+
+    * authentication/permission verdicts (401/403) are fatal — raised as
+      :class:`LLMAbort` so the caller can abandon the batch immediately;
+    * a rejected ``json_schema`` downgrades to ``json_object`` once and
+      continues (the prompt still spells out the required keys);
+    * a rejected reasoning-suppression field is raised as
+      :class:`ReasoningUnsupported` so the caller can try the next candidate;
+    * everything else — timeouts, rate limits, 5xx, malformed JSON — is
+      retried up to *attempts* times with a linearly growing pause.
+    """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": _user_prompt(entry)},
@@ -223,33 +289,49 @@ def _request_completion(
 
     last_error: Exception | None = None
 
-    for _ in range(max(1, attempts)):
+    for attempt in range(max(1, attempts)):
+        if attempt:
+            time.sleep(max(backoff, 0.0) * attempt)
         try:
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0,
+                "timeout": timeout,
+            }
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            if extra_body:
+                kwargs["extra_body"] = extra_body
             if use_schema:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "excerpt_entry",
-                            "strict": True,
-                            "schema": _RESPONSE_SCHEMA,
-                        },
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "excerpt_entry",
+                        "strict": True,
+                        "schema": _RESPONSE_SCHEMA,
                     },
-                )
+                }
             else:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0,
-                    response_format={"type": "json_object"},
-                )
+                kwargs["response_format"] = {"type": "json_object"}
+
+            response = client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content or ""
             return _validate(json.loads(content))
+        except LLMAbort:
+            raise
+        except ReasoningUnsupported:
+            raise
         except Exception as exc:  # noqa: BLE001 - provider errors vary widely
             last_error = exc
+            if _classify_llm_error(exc) == "auth":
+                raise LLMAbort(exc) from exc
+            # The reasoning check must come first.  Providers report an unknown
+            # ``extra_body`` field with wording such as ``invalid_request_error``
+            # that the schema test below also matches, and downgrading the
+            # schema would leave the rejected field in place on every retry.
+            if extra_body and llm_reasoning.is_reasoning_rejection(exc):
+                raise ReasoningUnsupported(str(exc)) from exc
             # A provider that rejects json_schema should fall back once.
             if use_schema and _looks_like_schema_rejection(exc):
                 use_schema = False
@@ -266,6 +348,49 @@ def _looks_like_schema_rejection(exc: Exception) -> bool:
     )
 
 
+def _extract_status(text: str) -> int:
+    """Pull the HTTP status out of an SDK error string, or ``0`` when absent.
+
+    The OpenAI SDK renders failures as ``Error code: 429 - {...}``; aggregators
+    keep that shape, so the digits right after the marker are the status.
+    """
+    marker = "Error code: "
+    if marker not in text:
+        return 0
+    tail = text.split(marker, 1)[1]
+    digits = ""
+    for char in tail:
+        if char.isdigit():
+            digits += char
+        else:
+            break
+    return int(digits) if digits else 0
+
+
+def _classify_llm_error(exc: Exception) -> str:
+    """Classify a provider failure into a retry decision.
+
+    Returns one of ``auth`` (give up at once), ``rate_limit``, ``server``,
+    ``network``, ``bad_reply``, or ``other``.  Only ``auth`` is treated as
+    fatal; the rest are worth another attempt.
+    """
+    text = str(exc)
+    lowered = text.lower()
+    status = _extract_status(text)
+
+    if status in (401, 403):
+        return "auth"
+    if status == 429:
+        return "rate_limit"
+    if status >= 500:
+        return "server"
+    if isinstance(exc, (TimeoutError, ConnectionError)) or "timeout" in lowered:
+        return "network"
+    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+        return "bad_reply"
+    return "other"
+
+
 def _summarize_error(exc: Exception) -> str:
     """Reduce a verbose provider error to one actionable line.
 
@@ -275,17 +400,7 @@ def _summarize_error(exc: Exception) -> str:
     """
     text = str(exc)
 
-    status = ""
-    marker = "Error code: "
-    if marker in text:
-        tail = text.split(marker, 1)[1]
-        digits = ""
-        for char in tail:
-            if char.isdigit():
-                digits += char
-            else:
-                break
-        status = digits
+    status = _extract_status(text) or ""
 
     detail = ""
     # OpenRouter nests the real message inside metadata.raw; the openai SDK
@@ -327,17 +442,83 @@ def _summarize_error(exc: Exception) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Circuit breaker
+# ---------------------------------------------------------------------------
+
+class _CircuitBreaker:
+    """Stop the stage once failures clearly are not about one record.
+
+    Two triggers:
+
+    * an authentication/permission verdict (401/403) — retrying cannot help, so
+      the batch is abandoned at once;
+    * *consecutive_limit* ordinary failures in a row — a run of them means the
+      endpoint is down or throttling, not that a particular phrase is cursed.
+
+    The tripped state is **not** persisted.  It describes one run, and a stale
+    "aborted" flag on disk would wrongly suppress the *next* run, which is
+    exactly the mistake ``llm_check`` avoids by never caching transient
+    verdicts.  Entries left untouched stay ``pending`` and are retried on the
+    next invocation through the existing idempotency rule.
+    """
+
+    def __init__(self, consecutive_limit: int = CONSECUTIVE_FAILURE_LIMIT,
+                 enabled: bool = True):
+        self._limit = max(1, consecutive_limit)
+        self._enabled = enabled
+        self._consecutive = 0
+        self._tripped = False
+        self._reason = ""
+
+    @property
+    def tripped(self) -> bool:
+        return self._tripped
+
+    @property
+    def reason(self) -> str:
+        return self._reason
+
+    def trip(self, exc: Exception) -> None:
+        """Trip on a fatal verdict, recording the actionable reason."""
+        self._tripped = True
+        self._reason = f"fatal: {_summarize_error(exc)}"
+
+    def record_failure(self) -> None:
+        self._consecutive += 1
+        if self._enabled and self._consecutive >= self._limit:
+            self._tripped = True
+            self._reason = f"aborted after {self._consecutive} consecutive failures"
+
+    def record_success(self) -> None:
+        self._consecutive = 0
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def complete_entries(
     entries: Sequence[BoldEntry],
     *,
     client: Any = None,
     model: str = "",
     use_schema: bool = True,
+    workers: int | None = None,
 ) -> list[BoldEntry]:
     """Complete every pending non-word entry in place and return the list.
 
     Entries already marked ``filled`` are skipped, which makes re-running the
     pipeline idempotent.
+
+    ``workers`` controls concurrency.  The default of 1 (or ``None``, which
+    resolves to the configured value) keeps the historical strictly sequential
+    behaviour.  Above 1 the requests are issued by a thread pool — but only the
+    *request and parse* half moves off the main thread: entries are updated and
+    messages are printed afterwards, in input order, on the calling thread.  No
+    worker touches a file, because ``lookup.write_json`` rewrites
+    ``.words.json``/``.errors.json`` with a read-merge-write that would race if
+    several threads ran it at once.
     """
     targets = [
         entry
@@ -349,25 +530,94 @@ def complete_entries(
 
     if client is None:
         client = _create_client()
+    llm = get_llm_settings()
     if not model:
         model = get_openai_settings()[2]
+    if workers is None:
+        workers = llm["workers"]
 
     total = len(targets)
-    for index, entry in enumerate(targets, start=1):
-        try:
-            payload = _request_completion(
-                client, model=model, entry=entry, use_schema=use_schema
-            )
-        except Exception as exc:  # noqa: BLE001 - a single failure must not abort
-            print(f"  [llm {index}/{total}] {entry.word!r}: failed ({_summarize_error(exc)})")
-            entry.detail = _summarize_error(exc)
-            continue
+    breaker = _CircuitBreaker()
+    # Serial runs enforce the breaker only for the fatal (401/403) verdict: a
+    # handful of flaky records in an otherwise healthy run must not cost the
+    # remaining ones their turn.  Concurrent runs need the stricter
+    # consecutive-failure rule, because they are the ones that can hammer a
+    # rate-limited endpoint with several doomed requests at once.
+    breaker._enabled = workers > 1
+    reasoning = llm_reasoning.ReasoningState(override=llm["reasoning"])
 
-        entry.entry = _to_standard_entry(entry, payload)
-        entry.code = CODE_OK
-        entry.detail = ""
-        entry.source = SOURCE_LLM
-        print(f"  [llm {index}/{total}] {entry.word!r}: ok")
+    def _one(index: int, entry: BoldEntry) -> tuple[int, BoldEntry, dict | None, str]:
+        """Issue one request.  Deliberately free of any shared mutation."""
+        if breaker.tripped:
+            return (index, entry, None, "aborted")
+        while True:
+            try:
+                payload = _request_completion(
+                    client,
+                    model=model,
+                    entry=entry,
+                    use_schema=use_schema,
+                    attempts=llm["retries"] + 1,
+                    timeout=llm["timeout"],
+                    backoff=llm["backoff"],
+                    extra_body=reasoning.current(),
+                    max_tokens=MAX_COMPLETION_TOKENS,
+                )
+            except LLMAbort as exc:
+                breaker.trip(exc)
+                return (index, entry, None, "fatal")
+            except ReasoningUnsupported:
+                # The endpoint does not know this field.  ``advance`` reports
+                # whether a further candidate is left to try.
+                if reasoning.advance():
+                    continue
+                return (index, entry, None, "reasoning_unsupported")
+            except Exception as exc:  # noqa: BLE001 - one failure must not abort
+                reason = _summarize_error(exc)
+                if breaker.tripped:
+                    return (index, entry, None, "aborted")
+                breaker.record_failure()
+                return (
+                    index,
+                    entry,
+                    None,
+                    "aborted" if breaker.tripped else reason,
+                )
+            else:
+                breaker.record_success()
+                reasoning.confirm()
+                return (index, entry, payload, "ok")
+
+    if workers <= 1:
+        results = [_one(index, entry) for index, entry in enumerate(targets, start=1)]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(
+                pool.map(lambda pair: _one(*pair), enumerate(targets, start=1))
+            )
+
+    # Everything below runs on the calling thread, in input order.
+    results.sort(key=lambda item: item[0])
+    for index, entry, payload, status in results:
+        if status == "ok":
+            entry.entry = _to_standard_entry(entry, payload)
+            entry.code = CODE_OK
+            entry.detail = ""
+            entry.source = SOURCE_LLM
+            print(f"  [llm {index}/{total}] {entry.word!r}: ok")
+        elif status == "aborted":
+            print(f"  [llm {index}/{total}] {entry.word!r}: skipped (aborted)")
+        elif status == "fatal":
+            print(f"  [llm {index}/{total}] {entry.word!r}: skipped (fatal)")
+        else:
+            print(f"  [llm {index}/{total}] {entry.word!r}: failed ({status})")
+            entry.detail = status
+
+    if breaker.tripped:
+        # Report once, on the calling thread, so the reason is not buried
+        # between per-record lines.  The remaining records keep their pending
+        # state and are picked up by the next run.
+        print(f"[llm] stopped early: {breaker.reason}")
 
     return list(entries)
 

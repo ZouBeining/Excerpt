@@ -151,4 +151,38 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: validate before the pipeline runs)"
         ),
     )
+    parser.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Time out of a single LLM request (default = 60.0 s). "
+            "Independent of --timeout, which only covers the dictionary."
+        ),
+    )
+    parser.add_argument(
+        "--llm-retries",
+        type=int,
+        default=None,
+        help=(
+            "How many times a failed LLM request is retried "
+            "(default = 3). Independent of --retry."
+        ),
+    )
+    parser.add_argument(
+        "--llm-workers",
+        type=int,
+        default=None,
+        help=(
+            "Number of concurrent LLM requests (default = 1, i.e. strictly "
+            "sequential, which is the historical behaviour). Raising it speeds "
+            "up the completion stage but may hit rate limits on free tiers."
+        ),
+    )
+    parser.add_argument(
+        "--llm-backoff",
+        type=float,
+        default=None,
+        help="Base backoff (seconds) between LLM retries (default = 0.5)",
+    )
     return parser

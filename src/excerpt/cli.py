@@ -98,6 +98,10 @@ def main(argv: list[str] | None = None) -> int:
             use_cache=not args.no_cache,
             compile_latex=args.compile_latex,
             xelatex=args.xelatex,
+            llm_timeout=args.llm_timeout,
+            llm_retries=args.llm_retries,
+            llm_workers=args.llm_workers,
+            llm_backoff=args.llm_backoff,
         )
     except ValueError as exc:
         print(f"[error] {exc}", file=sys.stderr)
