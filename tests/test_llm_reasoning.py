@@ -79,3 +79,41 @@ def test_unrelated_errors_are_not_reasoning_rejections():
     assert not llm_reasoning.is_reasoning_rejection(
         RuntimeError("Error code: 429 - rate limited")
     )
+
+
+def test_index_reports_the_current_position():
+    state = llm_reasoning.ReasoningState()
+    assert state.index() == 0
+    state.advance()
+    assert state.index() == 1
+
+
+def test_advance_is_thread_safe():
+    """Many workers sharing one state must not skip or repeat a candidate.
+
+    ``complete_entries`` hands the same instance to every parallel worker, so
+    a lost update here would make two records send different dialects than the
+    one the process agreed on.
+    """
+    import threading
+
+    state = llm_reasoning.ReasoningState()
+    total = len(state.candidates) - 1  # candidate count minus the terminal one
+    results: list[bool] = []
+    start = threading.Barrier(total)
+
+    def walk():
+        start.wait()
+        results.append(state.advance())
+
+    threads = [threading.Thread(target=walk) for _ in range(total)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    # Every step forward succeeded exactly once, and the walk landed on the
+    # terminal candidate rather than overshooting it.
+    assert results == [True] * total
+    assert state.index() == total
+    assert state.current() is None

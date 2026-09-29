@@ -30,6 +30,7 @@ needs ``common.config`` types, so it cannot create an import cycle.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 __all__ = [
@@ -68,6 +69,11 @@ _REJECTION_MARKERS = (
 #: determined".
 _WORKING_CANDIDATE: int | None = None
 
+#: Guards ``_WORKING_CANDIDATE`` and the per-run ``_index``.  Parallel workers
+#: share one :class:`ReasoningState`, so an unguarded counter would let two
+#: threads disagree about which dialect is current.
+_PROBE_LOCK = threading.Lock()
+
 
 def is_reasoning_rejection(exc: Exception) -> bool:
     """Return whether *exc* reads like "that reasoning field is not accepted".
@@ -85,7 +91,8 @@ def is_reasoning_rejection(exc: Exception) -> bool:
 def reset_probe_cache() -> None:
     """Forget the remembered candidate.  Intended for tests."""
     global _WORKING_CANDIDATE
-    _WORKING_CANDIDATE = None
+    with _PROBE_LOCK:
+        _WORKING_CANDIDATE = None
 
 
 class ReasoningState:
@@ -95,6 +102,12 @@ class ReasoningState:
     once any run has found a working spelling, every later run starts there
     instead of re-probing, so the cost is paid once per process rather than
     once per record.
+
+    Every mutation is guarded by a lock, because ``complete_entries`` may
+    drive several workers at once and an unguarded index would let two threads
+    disagree about which dialect is current.  The guard mirrors
+    :class:`excerpt.llm_format.SchemaState`, which has the same problem for
+    the ``response_format`` axis.
     """
 
     def __init__(self, override: dict[str, Any] | None = None):
@@ -102,9 +115,11 @@ class ReasoningState:
             self._build_candidates(override)
         )
         self._index = 0
-        if _WORKING_CANDIDATE is not None and _WORKING_CANDIDATE >= 0:
-            if _WORKING_CANDIDATE < len(self.candidates):
-                self._index = _WORKING_CANDIDATE
+        with _PROBE_LOCK:
+            known = _WORKING_CANDIDATE
+        if known is not None and known >= 0:
+            if known < len(self.candidates):
+                self._index = known
 
     @staticmethod
     def _build_candidates(
@@ -129,22 +144,34 @@ class ReasoningState:
         candidates.append(None)
         return candidates
 
+    def index(self) -> int:
+        """Return the index of the candidate to try next."""
+        with _PROBE_LOCK:
+            return self._index
+
     def current(self) -> dict[str, Any] | None:
         """Return the ``extra_body`` fragment to send with the next request."""
-        if self._index >= len(self.candidates):
+        index = self.index()
+        if index < 0 or index >= len(self.candidates):
             return None
-        return self.candidates[self._index]
+        return self.candidates[index]
 
     def advance(self) -> bool:
-        """Move to the next candidate; return whether another one exists."""
-        self._index += 1
-        if self._index >= len(self.candidates):
+        """Move to the next candidate; return whether another one exists.
+
+        ``False`` means every dialect was refused.  The index stays pinned on
+        the terminal candidate so the next attempt sends no ``extra_body``
+        field at all — the walk never runs off the end.
+        """
+        global _WORKING_CANDIDATE
+        with _PROBE_LOCK:
+            if self._index < len(self.candidates) - 1:
+                self._index += 1
+                return True
             # Every dialect was refused: remember that so later runs skip the
             # probing entirely and go straight to sending no field at all.
-            global _WORKING_CANDIDATE
             _WORKING_CANDIDATE = -1
             return False
-        return True
 
     def confirm(self) -> None:
         """Record the current candidate as the one this process should reuse.
@@ -154,4 +181,5 @@ class ReasoningState:
         index that has not yet produced a reply.
         """
         global _WORKING_CANDIDATE
-        _WORKING_CANDIDATE = self._index
+        with _PROBE_LOCK:
+            _WORKING_CANDIDATE = self._index
