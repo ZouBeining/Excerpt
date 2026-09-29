@@ -266,6 +266,63 @@ def _looks_like_schema_rejection(exc: Exception) -> bool:
     )
 
 
+def _summarize_error(exc: Exception) -> str:
+    """Reduce a verbose provider error to one actionable line.
+
+    Aggregators wrap the upstream fault in a large nested payload; printing it
+    whole buries the log.  Pull out the HTTP status and, when present, the
+    innermost provider message — the part a user can act on.
+    """
+    text = str(exc)
+
+    status = ""
+    marker = "Error code: "
+    if marker in text:
+        tail = text.split(marker, 1)[1]
+        digits = ""
+        for char in tail:
+            if char.isdigit():
+                digits += char
+            else:
+                break
+        status = digits
+
+    detail = ""
+    # OpenRouter nests the real message inside metadata.raw; the openai SDK
+    # renders that dict with single quotes, other paths use double quotes, so
+    # both spellings are searched.
+    for key in ('"raw":', "'raw':", '"message":', "'message':"):
+        if key not in text:
+            continue
+        chunk = text.split(key, 1)[1].lstrip()
+        if chunk.startswith(('"', "'")):
+            quote = chunk[0]
+            try:
+                detail = chunk[1 : chunk.index(quote, 1)].strip()
+            except ValueError:
+                detail = ""
+        if detail:
+            break
+    # A raw blob may itself be escaped JSON; in that case take its inner
+    # message rather than the braces.
+    if detail.startswith("{"):
+        for inner_key in ('"message":', "'message':"):
+            if inner_key in detail:
+                inner = detail.split(inner_key, 1)[1].lstrip()
+                if inner.startswith(('"', "'")):
+                    quote = inner[0]
+                    try:
+                        detail = inner[1 : inner.index(quote, 1)].strip()
+                    except ValueError:
+                        pass
+                break
+    if detail:
+        detail = detail.replace("\\n", " ").split(". ")[0].strip().rstrip(".")
+
+    head = f"HTTP {status}" if status else "request failed"
+    return f"{head}: {detail}" if detail else head
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -302,8 +359,8 @@ def complete_entries(
                 client, model=model, entry=entry, use_schema=use_schema
             )
         except Exception as exc:  # noqa: BLE001 - a single failure must not abort
-            print(f"  [llm {index}/{total}] {entry.word!r}: failed ({exc})")
-            entry.detail = str(exc)
+            print(f"  [llm {index}/{total}] {entry.word!r}: failed ({_summarize_error(exc)})")
+            entry.detail = _summarize_error(exc)
             continue
 
         entry.entry = _to_standard_entry(entry, payload)
