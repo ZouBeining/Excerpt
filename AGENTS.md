@@ -212,3 +212,20 @@ write_json.py
 - **熔断状态不落盘.** 它描述的是单次运行, 写盘会让下次运行被一个过期的"已中止"标记误伤. 这与 `llm_check.py` 从不缓存 transient 结论是同一个理由.
 - **新增 LLM provider 的思考强度写法时, 只在 `llm_reasoning.py` 的 `REASONING_CANDIDATES` 追加候选**, 不得在 `llm.py` 中硬编码 provider 名称或做供应商判断.
 - **新增任何 LLM 配置项时, 必须同步四处**: `config.py` 的 `_session_settings` 默认值、`configure()` 的三级优先级赋值、`.env.example` 的键、`tests/conftest.py` 的 `delenv` 列表. **缺一不可** —— `_session_settings` 是模块级可变对象, 测试环境变量清不掉它, 漏了最后一步会导致测试之间串状态.
+
+## LLM 结构化输出与缓存的约束
+
+- **结构化输出必须逐级降级, 不得因供应商不支持而报错退出.** 候选列表定义在 `excerpt/llm_format.py` 的 `SCHEMA_CANDIDATES`, 最后一项是"不发 `response_format`"的终结兜底 —— 它不可能再因格式被拒, 因此"供应商不支持结构化输出"在结构上就无法让该阶段失败. 全部候选被拒时只提示一次并继续.
+- **降级不消耗重试预算.** 被拒的是格式字段, 不是这次请求. `state.advance()` 返回 `True` 时应 `continue` 而不 `attempt += 1`, 否则一次探测就吃掉整条记录的重试次数.
+- **探测结论在进程内共享.** `complete_entries` 必须把同一个 `SchemaState` 传给所有 worker, 使第一个记录探出的写法被后续记录直接沿用. `_WORKING_INDEX` 只在请求**真正成功**后由 `confirm()` 写入 —— 越过一个候选只证明它被拒, 不等于下一个可用.
+- **新增 response_format 写法时, 只在 `llm_format.SCHEMA_CANDIDATES` 追加候选**, 不得在 `llm.py` 中硬编码 dialect 判断.
+- **`ReasoningState` 与 `SchemaState` 的每次变更都必须持 `_PROBE_LOCK`.** 二者都被 `complete_entries` 的多个 worker 共享, 无锁计数会让两个线程对"当前候选"产生分歧.
+- **LLM 输出缓存只存已通过 `_validate` 的 payload, 永不存失败.** 超时 / 429 / 5xx / 坏 JSON 一旦落盘, 一次临时故障就被永久冻结. 缓存的值是 payload 而非成品 entry —— entry 还挂着 `code`、行号等本次运行的信息.
+- **缓存键为 `sha256(词条文本 | 类型 | PROMPT_VERSION)`.** 模型名不进键（它是文件名）, 但**改动提示词或期望返回结构时必须自增 `llm_format.PROMPT_VERSION`**, 否则旧答案会被继续复用.
+- **缓存文件名为 `~/.cache/excerpt/{model}.cache.json`, 模型名中的非法字符（尤其 `/` 和 `:`）必须替换为 `_`.** Windows 上 `:` 会被当作数据流分隔符, 直接写入会失败.
+- **缓存默认开启的边界在 CLI 层.** `llm.run()` / `complete_entries()` 只在显式收到 `cache` 参数时才启用; 不传即不缓存, 库层不得自行打开 `~/.cache`（避免对库调用产生隐式文件副作用）.
+- **写入缓存、打印日志、改动 entry 三者都只允许在主线程 (`_apply_result`) 完成.** worker 只负责"发请求 + 解析", 与"worker 线程不得落盘"是同一条约束.
+- **输出必须逐条即时打印, 且保持输入顺序.** 串行路径每条 settle 后立刻打印; 并发路径用 `as_completed` 收结果, 但要用 `ready` 缓冲把过快的条目压住, 直到它前面所有位置都已打印. 不得改成"全部结束后再一次性输出".
+- **缓存命中时日志显示 `ok (cache)`**, 使"这条是复用的、没有发请求"在命令行上可观测.
+- **新增涉及缓存目录的测试时必须确认 `EXCERPT_CACHE_DIR` 已被指向临时目录**（`tests/conftest.py` 的 autouse fixture 负责）, 否则测试会污染开发者真实的 `~/.cache/excerpt/`.
+

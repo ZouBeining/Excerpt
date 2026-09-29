@@ -54,7 +54,8 @@ cp .env.example .env
 | `DICT_CHOICE`                           | 词典：`MW`（Merriam-Webster）或 `FD`（Free Dictionary） | `MW`                                 |
 | `DICT_API_KEY`                          | 词典 API Key；`MW` 必填，`FD` 不需要                     | 空                                    |
 | `OUTPUT_DIR`                            | 输出目录                                            | `.{title}_out`                       |
-| `EXCERPT_CACHE_PATH`                    | 缓存文件路径                                          | `~/.cache/excerpt/<slug>.cache.json` |
+| `EXCERPT_CACHE_PATH`                    | **词典**缓存文件路径                                    | `~/.cache/excerpt/<slug>.cache.json` |
+| `EXCERPT_CACHE_DIR`                     | **缓存目录**，覆盖词典缓存、LLM 缓存与 LLM 预检结果三类文件的落点          | `~/.cache/excerpt`                   |
 | `COMPILE_LATEX`                         | 是否把 `.tex` 编译成 PDF（`True`/`False`）              | `False`                              |
 | `XELATEX`                               | `xelatex` 可执行文件路径（不在 PATH 时用）                   | 自动探测                                 |
 | `USE_LLM`                               | 是否用 LLM 补全非单词条目（`True`/`False`）                 | `False`                              |
@@ -165,6 +166,31 @@ LLM_REASONING={"reasoning": {"enabled": false}}
 > **更省事的办法**：这个任务只需要六个字段的英文释义，**并不需要推理模型**。
 > 换成一个非推理的小模型，延迟和费用都会低一个数量级，上述机制也就不再重要了。
 
+### 结构化输出的降级
+
+补全要求返回六个固定字段，所以程序会请求**结构化输出**（`response_format`）。
+但各端点对这个字段的支持程度差别很大：有的支持完整的 JSON Schema 契约，有的接受对象
+却拒绝后来才加入规范的 `strict` 键，有的只认 `json_object`，还有的干脆拒绝整个字段。
+没有任何接口可以事先查询能力，只能**逐个试出来**：
+
+| # | 候选 `response_format`                        | 说明                          |
+| - | ------------------------------------------- | --------------------------- |
+| 1 | `json_schema` + `strict: true`              | 现代契约：服务端按 schema 校验返回        |
+| 2 | `json_schema` + `strict: false`             | 部分聚合服务只实现了旧版草案，会拒绝 `strict` |
+| 3 | `json_object` 内联 schema                     | 非规范但在实际中出现过                 |
+| 4 | 纯 `json_object`                             | 只保证返回是合法 JSON，字段由提示词与本地校验负责 |
+| 5 | **不发 `response_format`**                    | 终结兜底：这一项不可能再因"格式"被拒          |
+
+关键性质：
+
+- **降级不消耗重试次数**。被拒的是格式字段，不是这次请求；换一种写法继续，重试预算不动。
+- **判定结果在进程内共享**。第一条记录探出的可用写法，后面的记录直接沿用，探测成本
+  只付一次，不是每条记录付一次。
+- **结构化输出永不导致整批失败**。候选列表的最后一项是"什么都不发"，它不可能再因格式
+  被拒，所以"供应商不支持结构化输出"永远不会让这一阶段报错退出——最差也只是退回
+  提示词 + 本地校验。全部候选都被拒时只提示一次：
+  `[llm] structured output unsupported; relying on the prompt and local validation`。
+
 ### LLM 的并发、超时与重试
 
 | 行为      | 默认                                                          | 说明                                                                    |
@@ -181,6 +207,39 @@ LLM_REASONING={"reasoning": {"enabled": false}}
 因为失败记录会被保留为 `pending`，被熔断跳过的条目**不会丢失**：修好网络或额度后
 直接重跑同一条命令即可续上。
 
+### LLM 输出缓存
+
+一次补全是整个流程里最贵的操作：要花钱、要等，在免费档上还要占限流额度。
+同一份文档重跑时，记录的文本、类型和提示词都没变，答案本来就已经知道，再问一遍纯属浪费。
+
+因此每次补全前都会先查缓存，命中就直接复用，**一次请求都不发**：
+
+```
+  [llm 1/4] 'returning your call': ok          ← 首次运行：真实请求
+  [llm 2/4] 'take for granted': ok
+
+  [llm 1/4] 'returning your call': ok (cache)  ← 再次运行：零请求
+  [llm 2/4] 'take for granted': ok (cache)
+```
+
+缓存位置 `~/.cache/excerpt/{model}.cache.json`，**一个模型一个文件** —— 同一个记录换个
+模型来答是不同的答案，不是过期答案。模型名里的 `/` 和 `:` 会被替换成 `_`
+（如 `vendor/model:free` → `vendor_model_free.cache.json`），因为 Windows 不允许文件名
+出现 `:`。
+
+| 项   | 规则                                                                  |
+| --- | ------------------------------------------------------------------- |
+| 键   | `sha256(词条文本 \| 类型 \| PROMPT_VERSION)`                               |
+| 值   | **已通过 schema 校验**的 payload，不是成品 entry（entry 还挂着 `code`、行号等本次运行的信息）      |
+| 失效  | 改动词条文本、类型，或**升级提示词**（`PROMPT_VERSION` 自增）即自动失效；无需迁移，也不改文件结构         |
+| 不缓存 | 失败一律不落盘：超时、429、5xx、返回体不是合法 JSON —— 否则一次临时故障会被永久冻结               |
+
+> **缓存归属**：只有命令行会启用缓存。`llm.run()` / `complete_entries()` 不传 `cache` 参数
+> 就完全不碰 `~/.cache`，作为库调用时没有任何隐式文件副作用。
+
+想强制重新联网补全，加 `--no-llm-cache`；想换缓存位置，用 `--llm-cache-path`
+或环境变量 `EXCERPT_CACHE_DIR`（后者是**目录**级覆盖，同时作用于词典缓存和 LLM 预检结果）。
+
 ### 命令行动词速查
 
 | 参数                                              | 含义                                        |
@@ -195,6 +254,8 @@ LLM_REASONING={"reasoning": {"enabled": false}}
 | `--llm-retries`                                 | LLM 重试次数，默认 `3`（独立于 `--retry`）              |
 | `--llm-backoff`                                 | LLM 重试退避基数，默认 `0.5`                          |
 | `--llm-workers`                                 | LLM 并发数，默认 `1`（串行，与旧行为一致）                   |
+| `--no-llm-cache`                                | 忽略且不写 LLM 输出缓存（默认会读写 `~/.cache/excerpt/{model}.cache.json`） |
+| `--llm-cache-path`                              | 指定 LLM 输出缓存文件位置                            |
 | `--env-file`                                    | 指定另一个 `.env` 文件                           |
 | `--timeout` / `--retry` / `--delay` / `--proxy` | 网络参数，覆盖 `.env`                            |
 | `--cache-path`                                  | 指定缓存文件位置                                  |
@@ -234,7 +295,9 @@ LLM_REASONING={"reasoning": {"enabled": false}}
 缓存（全局副作用，不在输出目录）：
 
 ```
-~/.cache/excerpt/mw.cache.json     # 存词典 API 的原始返回，便于离线复用
+~/.cache/excerpt/mw.cache.json          # 存词典 API 的原始返回，便于离线复用
+~/.cache/excerpt/{model}.cache.json     # 存 LLM 补全：已通过校验的 payload，按模型分文件
+~/.cache/excerpt/llm.check.json         # 存 LLM 配置预检结论
 ```
 
 ### `.errors.json` 的计数器
@@ -314,7 +377,7 @@ pytest                                   # 已激活虚拟环境时
 .venv/Scripts/python.exe -m pytest       # Windows 直接指定解释器
 ```
 
-预期结果：**240 passed**。
+预期结果：**305 passed**。
 
 ### 2. 常用测试命令
 
@@ -336,20 +399,23 @@ pytest -x                                   # 首个失败即停
 - LLM 调用用假 client 替代，不会真的请求 OpenAI；
 - `tests/conftest.py` 里有一个 autouse fixture，把配置指向临时目录并  
   **显式禁用 dotenv**（`env_path=""`），所以你本机真实的 `.env`  
-  不会泄漏进测试、导致意外联网。
+  不会泄漏进测试、导致意外联网；它还把 `EXCERPT_CACHE_DIR` 指到临时目录，  
+  因此测试**不会读写你真实的 `~/.cache/excerpt/`**。
 
 **各文件覆盖范围**：
 
-| 文件                  | 用例数 | 覆盖内容                                        |
-| ------------------- | --- | ------------------------------------------- |
-| `test_extractor.py` | 19  | 加粗提取、单词判定、类型分类、去重合并                         |
-| `test_lookup.py`    | 44  | 缓存读写、HTTP 重试与分类、MW markup 清洗、MW 数据映射、写 JSON |
-| `test_llm.py`       | 39  | 提示词构造、schema 校验、幂等跳过已 filled 记录、错误摘要、超时与 token 上限、退避重试、错误分类、熔断、并发、推理强度降级 |
-| `test_llm_check.py` | 27  | LLM 预检：指纹、缓存读写、HTTP 分类、端点拼接、错误解包、探针关闭思考      |
-| `test_llm_reasoning.py` | 8 | 思考强度候选列表：覆盖优先、逐个降级、兜底、进程内缓存          |
-| `test_write_md.py`  | 11  | 笔记 / 索引渲染、表头统计                              |
-| `test_latex.py`     | 49  | LaTeX 转义、条目渲染、文件布局、`xelatex` 查找与编译（含缺工具回退）  |
-| `test_cli.py`       | 43  | 参数解析、优先级、输出目录解析、各阶段编排、LLM 预检门控、LLM 配置项    |
+| 文件                     | 用例数 | 覆盖内容                                        |
+| ---------------------- | --- | ------------------------------------------- |
+| `test_extractor.py`    | 19  | 加粗提取、单词判定、类型分类、去重合并                         |
+| `test_lookup.py`       | 44  | 缓存读写、HTTP 重试与分类、MW markup 清洗、MW 数据映射、写 JSON |
+| `test_llm.py`          | 55  | 提示词构造、schema 校验、幂等跳过已 filled 记录、错误摘要、超时与 token 上限、退避重试、错误分类、熔断、并发、推理强度降级、结构化输出降级、逐条流式输出、缓存命中 / 回填 |
+| `test_llm_cache.py`    | 29  | LLM 输出缓存：模型名消毒、键构造、读写往返、拷贝语义、原子写、损坏 / 版本不符容错、禁用态 |
+| `test_llm_check.py`    | 27  | LLM 预检：指纹、缓存读写、HTTP 分类、端点拼接、错误解包、探针关闭思考      |
+| `test_llm_format.py`   | 16  | 结构化输出候选列表：顺序、schema 注入、非破坏性、越界退化、进程内记忆、线程安全 |
+| `test_llm_reasoning.py` | 10 | 思考强度候选列表：覆盖优先、逐个降级、兜底、进程内缓存、线程安全           |
+| `test_write_md.py`     | 11  | 笔记 / 索引渲染、表头统计                              |
+| `test_latex.py`        | 49  | LaTeX 转义、条目渲染、文件布局、`xelatex` 查找与编译（含缺工具回退）  |
+| `test_cli.py`          | 45  | 参数解析、优先级、输出目录解析、各阶段编排、LLM 预检门控、LLM 配置项、LLM 缓存开关 |
 
 > Windows 上 pytest 清理临时目录时可能打印 `safe-delete ... trash-failed` 警告，  
 > 这是系统回收站机制的限制，**不影响测试结果**，可忽略。
