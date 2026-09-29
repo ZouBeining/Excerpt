@@ -37,6 +37,11 @@ def isolated_env(monkeypatch, tmp_path):
         "RETRY",
         "DELAY",
         "PROXY",
+        "LLM_TIMEOUT",
+        "LLM_RETRIES",
+        "LLM_WORKERS",
+        "LLM_BACKOFF",
+        "LLM_REASONING",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -44,6 +49,14 @@ def isolated_env(monkeypatch, tmp_path):
     # passing an explicit empty path, which means "no .env at all".
     monkeypatch.setenv("EXCERPT_CACHE_PATH", str(tmp_path / "cache.json"))
     config.configure(dict_choice="MW", use_llm=False, env_path="")
+    # The reasoning-probe verdict is a module-level cache, so it must not leak
+    # from one test into the next.
+    try:
+        from excerpt import llm_reasoning
+    except ImportError:  # pragma: no cover - module added in a later stage
+        pass
+    else:
+        llm_reasoning.reset_probe_cache()
     yield tmp_path
 
 
