@@ -35,6 +35,7 @@ from typing import Any, Iterable, Sequence
 
 from common.config import (
     Artifacts,
+    abbreviate_pos,
     artifacts,
     get_dict_config,
     get_session_settings,
@@ -172,7 +173,8 @@ def _render_entry(entry: dict[str, Any], index: int) -> list[str]:
             if not definition:
                 continue
             lines.append(
-                f"\\wsense{{{escape_latex(pos)}}}{{{escape_latex(definition)}}}"
+                f"\\wsense{{{escape_latex(abbreviate_pos(pos))}}}"
+                f"{{{escape_latex(definition)}}}"
             )
             for example in sense.get("examples") or []:
                 text = str(example).strip()

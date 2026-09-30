@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 from common.config import (
     CODE_NOT_A_SINGLE_WORD,
     CODE_OK,
@@ -174,6 +176,29 @@ class TestSentenceMarking:
         art = artifacts("test", "MW", str(tmp_path))
         text = write_md.render_note_md([make_entry(entry=DEFINED_ENTRY)], {"items": []}, art)
         assert "> Tushman, the middle-school director." in text
+
+
+class TestPosAbbreviation:
+    """Only the note body abbreviates the part of speech."""
+
+    def test_note_body_abbreviates_the_sense_pos(self, tmp_path):
+        art = artifacts("test", "MW", str(tmp_path))
+        text = write_md.render_note_md([make_entry(entry=DEFINED_ENTRY)], {"items": []}, art)
+        assert "- *n.* the head of an organized group" in text
+
+    def test_note_body_abbreviates_compound_labels(self, tmp_path):
+        art = artifacts("test", "MW", str(tmp_path))
+        payload = copy.deepcopy(DEFINED_ENTRY)
+        payload["senses"][0]["pos"] = "phrasal verb / idiom"
+        entry = make_entry("give up", "phrase", CODE_OK, SOURCE_LLM, payload)
+        text = write_md.render_note_md([entry], {"items": []}, art)
+        assert "- *phr. v. / idiom* " in text
+
+    def test_index_table_keeps_the_full_label(self, tmp_path):
+        art = artifacts("test", "MW", str(tmp_path))
+        text = write_md.render_index_md([make_entry(entry=DEFINED_ENTRY)], {"items": []}, art)
+        assert "| noun |" in text
+        assert "| n. |" not in text
 
 
 class TestWriteMd:

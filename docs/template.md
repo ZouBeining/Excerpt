@@ -20,12 +20,12 @@
 `US` /də-ˈrek-tər/
 
 **Definition**
-- *noun* the head of an organized group or administrative unit (such as a bureau or school)
+- *n.* the head of an organized group or administrative unit (such as a bureau or school)
   - E.g.：director of religious education
   - E.g.：a communications director
-- *noun* one of a group of persons entrusted with the overall direction of a corporate enterprise
+- *n.* one of a group of persons entrusted with the overall direction of a corporate enterprise
   - E.g.：on the board of directors for a large corporation
-- *noun* a person who supervises the production of a show (as for stage or screen) usually with responsibility for action, lighting, music, and rehearsals
+- *n.* a person who supervises the production of a show (as for stage or screen) usually with responsibility for action, lighting, music, and rehearsals
   - E.g.：a famous Hollywood director
 
 **Etymology**
@@ -44,7 +44,7 @@
 - dict: mw
 
 **Definition**
-- *phrase* used to identify oneself when calling someone back after they have called you; calling someone in response to their earlier call
+- *phr.* used to identify oneself when calling someone back after they have called you; calling someone in response to their earlier call
   - E.g.：This is Amanda Will, returning your call.
   - E.g.：I'm returning your call from yesterday.
 

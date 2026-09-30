@@ -84,6 +84,9 @@ __all__ = [
     "artifacts",
     # Markdown labels
     "MD_LABELS",
+    # Part-of-speech labels
+    "POS_ABBREVIATIONS",
+    "abbreviate_pos",
 ]
 
 
@@ -173,6 +176,56 @@ MD_LABELS: dict[str, str] = {
     "antonyms": "Anton.",
     "examples": "E.g.",
 }
+
+#: Part-of-speech labels printed abbreviated in the note body and the LaTeX
+#: handout.  The stored ``pos`` field keeps the dictionary's own spelling — the
+#: abbreviation is a display concern only.  Labels missing here, an idiom for
+#: instance, are printed exactly as they came in.
+POS_ABBREVIATIONS: dict[str, str] = {
+    "intransitive verb": "v.i.",
+    "transitive verb": "v.t.",
+    "phrasal verb": "phr. v.",
+    "abbreviation": "abbr.",
+    "interjection": "interj.",
+    "plural noun": "n. pl.",
+    "conjunction": "conj.",
+    "preposition": "prep.",
+    "adjective": "adj.",
+    "pronoun": "pron.",
+    "adverb": "adv.",
+    "phrase": "phr.",
+    "noun": "n.",
+    "verb": "v.",
+}
+
+#: Keys sorted longest first, so ``transitive verb`` is not read as ``verb`` and
+#: ``pronoun`` is never mistaken for ``noun``.  A single pass keeps a fresh
+#: abbreviation from being rewritten by the same call.
+_POS_ABBREV_RE = re.compile(
+    r"\b(?:"
+    + "|".join(
+        re.escape(key) for key in sorted(POS_ABBREVIATIONS, key=len, reverse=True)
+    )
+    + r")\b",
+    re.IGNORECASE,
+)
+
+
+def abbreviate_pos(pos: str) -> str:
+    """Return *pos* with every recognised part-of-speech label abbreviated.
+
+    Text the table does not know is left untouched, which is how a word such as
+    ``idiom`` stays unabbreviated.  Compound and slash-separated labels are
+    handled label by label, so ``phrasal verb / idiom`` reads ``phr. v. /
+    idiom`` and ``conjunction phrase`` reads ``conj. phr.``.
+    """
+    text = str(pos or "")
+    if not text:
+        return text
+    return _POS_ABBREV_RE.sub(
+        lambda match: POS_ABBREVIATIONS[match.group(0).lower()], text
+    )
+
 
 DEFAULT_DICT_CHOICE = "MW"
 

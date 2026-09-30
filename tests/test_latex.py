@@ -118,7 +118,7 @@ class TestEntryBlocks:
         assert r"\whead{director}" in text
         assert r"\wsent{" in text
         assert r"\wmark{director}" in text
-        assert r"\wsense{noun}{the head of a group}" in text
+        assert r"\wsense{n.}{the head of a group}" in text
         assert r"\wex{a communications director}" in text
         assert r"\wtag{Syn.}{manager}" in text
 
@@ -156,6 +156,18 @@ class TestEntryBlocks:
         text = "\n".join(latex._render_entry(entry, 1))
         assert r"\whead{deform}" in text
         assert r"\wmark{deformed}" in text
+
+    def test_pos_is_abbreviated(self):
+        entry = self._entry()
+        entry["entry"]["senses"][0]["pos"] = "transitive verb"
+        text = "\n".join(latex._render_entry(entry, 1))
+        assert r"\wsense{v.t.}{the head of a group}" in text
+
+    def test_missing_pos_keeps_its_placeholder(self):
+        entry = self._entry()
+        entry["entry"]["senses"][0]["pos"] = ""
+        text = "\n".join(latex._render_entry(entry, 1))
+        assert r"\wsense{---}{the head of a group}" in text
 
 
 class TestBuild:

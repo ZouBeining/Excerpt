@@ -25,6 +25,7 @@ from common.config import (
     SOURCE_CACHE,
     Artifacts,
     BoldEntry,
+    abbreviate_pos,
     get_dict_config,
 )
 
@@ -127,7 +128,7 @@ def _render_senses(entry_payload: dict[str, Any]) -> list[str]:
         definition = str(sense.get("definition") or "").strip()
         if not definition and not sense.get("examples"):
             continue
-        prefix = f"- *{pos}* " if pos else "- "
+        prefix = f"- *{abbreviate_pos(pos)}* " if pos else "- "
         lines.append(f"{prefix}{definition}".rstrip())
         for example in sense.get("examples") or []:
             text = str(example).strip()
