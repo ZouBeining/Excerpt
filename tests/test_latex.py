@@ -71,6 +71,25 @@ class TestSentence:
     def test_empty_sentence_falls_back_to_the_word(self):
         assert latex.render_sentence("", "word") == "word"
 
+    def test_only_the_target_bold_is_marked(self):
+        sentence = 'And when she **hung up**, I was like, "**what\'s up**, what did he say?'
+        rendered = latex.render_sentence(sentence, "hung up")
+        assert r"\wmark{hung up}" in rendered
+        assert r"\wmark{what's up}" not in rendered
+
+    def test_the_other_record_marks_its_own_bold(self):
+        sentence = 'And when she **hung up**, I was like, "**what\'s up**, what did he say?'
+        rendered = latex.render_sentence(sentence, "what's up")
+        assert r"\wmark{what's up}" in rendered
+        assert r"\wmark{hung up}" not in rendered
+
+    def test_lemma_form_is_the_marked_bold(self):
+        rendered = latex.render_sentence("He was **deformed** by it.", "deform", "deformed")
+        assert r"\wmark{deformed}" in rendered
+
+    def test_several_unmatched_bolds_mark_none(self):
+        assert r"\wmark" not in latex.render_sentence("**alpha** and **beta**", "gamma")
+
 
 class TestEntryBlocks:
     def _entry(self, **overrides):
@@ -120,6 +139,23 @@ class TestEntryBlocks:
         entry["entry"]["inflections"] = [{"form": "directors", "label": "plural"}]
         text = "\n".join(latex._render_entry(entry, 1))
         assert r"\wtag{Inflections}{plural directors}" in text
+
+    def test_only_the_entry_bold_is_marked(self):
+        entry = self._entry(
+            word="hung up",
+            sentence='And when she **hung up**, I was like, "**what\'s up**, what did he say?',
+        )
+        text = "\n".join(latex._render_entry(entry, 1))
+        assert r"\wmark{hung up}" in text
+        assert r"\wmark{what's up}" not in text
+
+    def test_lemma_entry_marks_the_inflected_form(self):
+        entry = self._entry(
+            word="deform", sentence="He was **deformed** by it.", lemma_from="deformed"
+        )
+        text = "\n".join(latex._render_entry(entry, 1))
+        assert r"\whead{deform}" in text
+        assert r"\wmark{deformed}" in text
 
 
 class TestBuild:

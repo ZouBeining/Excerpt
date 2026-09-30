@@ -140,6 +140,42 @@ class TestIndexRendering:
         assert "\u2014" in text
 
 
+class TestSentenceMarking:
+    """A sentence may bold several records; only this one may be marked."""
+
+    #: A real sentence from the sample text, bolding two different records.
+    TWO_BOLDS = 'And when she **hung up**, I was like, "**what\'s up**, what did he say?'
+
+    def _entry(self, word="hung up", type_="phrase", **overrides):
+        entry = make_entry(word, type_, CODE_OK, **overrides)
+        entry.sentence = self.TWO_BOLDS
+        return entry
+
+    def test_note_body_marks_only_this_entry(self, tmp_path):
+        art = artifacts("test", "MW", str(tmp_path))
+        text = write_md.render_note_md([self._entry()], {"items": []}, art)
+        assert "> And when she **hung up**, I was like, \"what's up, what did he say?" in text
+        assert "**what's up**" not in text
+
+    def test_index_table_marks_only_this_entry(self, tmp_path):
+        art = artifacts("test", "MW", str(tmp_path))
+        text = write_md.render_index_md([self._entry()], {"items": []}, art)
+        assert "**hung up**" in text
+        assert "**what's up**" not in text
+
+    def test_lemma_entry_marks_the_inflected_form(self, tmp_path):
+        art = artifacts("test", "MW", str(tmp_path))
+        entry = self._entry(word="deform", type_="word", is_lemma=True, lemma_from="deformed")
+        entry.sentence = "He was **deformed** by it."
+        text = write_md.render_note_md([entry], {"items": []}, art)
+        assert "> He was **deformed** by it." in text
+
+    def test_sentence_without_markers_is_unchanged(self, tmp_path):
+        art = artifacts("test", "MW", str(tmp_path))
+        text = write_md.render_note_md([make_entry(entry=DEFINED_ENTRY)], {"items": []}, art)
+        assert "> Tushman, the middle-school director." in text
+
+
 class TestWriteMd:
     def test_both_files_are_written(self, tmp_path):
         art = artifacts("test", "MW", str(tmp_path))

@@ -33,6 +33,8 @@ from common.config import (
     BoldEntry,
 )
 
+from .bold import BOLD_RE, render_markdown_sentence
+
 __all__ = [
     "classify",
     "extract_bold_entries",
@@ -54,7 +56,9 @@ _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _INLINE_CODE_RE = re.compile(r"(`+)(?:.+?)\1")
 
 #: Bold spans: **...** or __...__, no leading/trailing whitespace inside.
-_BOLD_RE = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
+#: Shared with the renderers through :mod:`excerpt.bold`, so a span is always
+#: recognised the same way on the way in and on the way out.
+_BOLD_RE = BOLD_RE
 
 #: Escaped characters — swallow the backslash but keep the width.
 _ESCAPE_RE = re.compile(r"\\(.)")
@@ -252,7 +256,10 @@ def render_index_md(
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for i, entry in enumerate(entries, start=1):
-        sentence = entry.sentence.replace("|", "\\|")
+        # One sentence may hold several bolds: mark only this record's own span.
+        sentence = render_markdown_sentence(
+            entry.sentence, (entry.word, entry.lemma_from)
+        ).replace("|", "\\|")
         lines.append(
             f"| {i} | {entry.word} | {entry.type} | \"{sentence}\" | "
             f"{entry.line} | {_index_pronunciation(entry)} |"

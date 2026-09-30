@@ -41,6 +41,8 @@ from common.config import (
     normalize_title,
 )
 
+from .bold import target_bold_segments
+
 __all__ = [
     "build",
     "compile_tex",
@@ -84,11 +86,6 @@ _SMART_MAP = {
     "\u00a0": "~",
 }
 
-#: ``\wmark{...}`` marks the bolded span inside its sentence.
-_BOLD_SPAN_RE = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", re.DOTALL)
-_UNDERSCORE_SPAN_RE = re.compile(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)", re.DOTALL)
-
-
 # ---------------------------------------------------------------------------
 # Escaping
 # ---------------------------------------------------------------------------
@@ -121,46 +118,31 @@ def escape_latex(value: Any) -> str:
 # Sentence rendering
 # ---------------------------------------------------------------------------
 
-def render_sentence(sentence: str, word: str) -> str:
-    r"""Escape *sentence* and underline the bolded span with ``\wmark``."""
+def render_sentence(sentence: str, word: str, lemma_from: str = "") -> str:
+    r"""Escape *sentence* and underline *this* record's span with ``\wmark``.
+
+    A sentence may bold several records; only the span matching ``word`` — or
+    ``lemma_from``, since a lemma record stores the base form while the sentence
+    bolds the inflected one — is underlined.  The other bolds stay plain.
+    """
     text = str(sentence or "")
     if not text:
         return escape_latex(word)
 
-    escaped = escape_latex(text)
-    escaped_word = escape_latex(word)
-
-    # The extractor keeps the ``**`` markers in ``sentence``; prefer them.
-    parts = _split_bold(escaped)
-    if parts is not None:
+    # The extractor keeps the ``**`` markers in ``sentence``; rely on them.
+    parts, had_markers = target_bold_segments(text, (word, lemma_from))
+    if had_markers:
         return "".join(
-            f"\\wmark{{{chunk}}}" if is_bold else chunk for chunk, is_bold in parts
+            f"\\wmark{{{escape_latex(chunk)}}}" if is_bold else escape_latex(chunk)
+            for chunk, is_bold in parts
         )
 
+    escaped = escape_latex(text)
+    escaped_word = escape_latex(word)
     if escaped_word and escaped_word in escaped:
         return escaped.replace(escaped_word, f"\\wmark{{{escaped_word}}}", 1)
 
     return escaped
-
-
-def _split_bold(text: str) -> list[tuple[str, bool]] | None:
-    """Split a sentence on bold markers; ``None`` when there are none."""
-    if "**" not in text and "__" not in text:
-        return None
-
-    parts: list[tuple[str, bool]] = []
-    position = 0
-    pattern = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
-
-    for match in pattern.finditer(text):
-        if match.start() > position:
-            parts.append((text[position : match.start()], False))
-        parts.append((match.group(2), True))
-        position = match.end()
-
-    if position < len(text):
-        parts.append((text[position:], False))
-    return parts
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +153,8 @@ def _render_entry(entry: dict[str, Any], index: int) -> list[str]:
     """Render one record as LaTeX commands from the preamble."""
     payload = entry.get("entry") or {}
     word = str(entry.get("word") or "").strip()
-    sentence = render_sentence(entry.get("sentence") or "", word)
+    lemma_from = str(entry.get("lemma_from") or "").strip()
+    sentence = render_sentence(entry.get("sentence") or "", word, lemma_from)
 
     lines = [f"\\whead{{{escape_latex(word)}}}", f"\\wsent{{{sentence}}}"]
 

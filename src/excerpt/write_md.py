@@ -28,6 +28,8 @@ from common.config import (
     get_dict_config,
 )
 
+from .bold import render_markdown_sentence
+
 __all__ = ["render_index_md", "render_note_md", "run", "write_md"]
 
 
@@ -143,10 +145,14 @@ def _render_tag(label: str, values: Iterable[str]) -> list[str]:
 
 def _render_entry_md(entry: BoldEntry, index: int) -> list[str]:
     payload = entry.entry or {}
+    # A sentence can bold several records; quote it with only this one marked.
+    sentence = render_markdown_sentence(
+        entry.sentence, (entry.word, entry.lemma_from)
+    )
     lines: list[str] = [
         f"### {index}. {entry.word}",
         "",
-        f"> {entry.sentence}",
+        f"> {sentence}",
         "",
         f"- type: {entry.type}",
         f"- line: {entry.line}",
@@ -217,7 +223,9 @@ def render_index_md(
         payload = entry.entry or {}
         sense = str(payload.get("pos") or "").strip() or "\u2014"
         pronunciation = _pronunciation_line(payload) or "\u2014"
-        sentence = str(entry.sentence).replace("|", "\\|")
+        sentence = render_markdown_sentence(
+            str(entry.sentence), (entry.word, entry.lemma_from)
+        ).replace("|", "\\|")
         lines.append(
             f"| {i} | {entry.word} | {entry.type} | \"{sentence}\" | "
             f"{entry.line} | {sense} | {pronunciation} |"
