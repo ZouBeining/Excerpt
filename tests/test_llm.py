@@ -100,6 +100,20 @@ GOOD_REPLY = json.dumps(
     }
 )
 
+#: A reply that reads the record as one word in one tense.  This is what models
+#: actually returned for a whole sentence before the label was pinned, and it is
+#: exactly what must never reach the disk.
+TENSE_REPLY = json.dumps(
+    {
+        "pos": "past tense verb",
+        "definition": "to move very quickly; to speed away",
+        "examples": ["The car zoomed past us."],
+        "synonyms": ["dash"],
+        "antonyms": [],
+        "shortDefs": ["zoom away = move quickly away"],
+    }
+)
+
 
 class TestTargetSelection:
     def test_only_pending_non_word_entries_are_sent(self):
@@ -184,6 +198,28 @@ class TestCompletion:
         assert entry.source == SOURCE_EXTRACTOR
         assert entry.detail
 
+    def test_sentence_pos_is_pinned_to_the_literal_label(self):
+        """A sentence has no part of speech, so its label is structural.
+
+        The prompt asks for ``sentence``, but a model that answers "past tense
+        verb" regardless must still not be able to write that to disk.  Both
+        the entry and its single sense carry the pinned label, because the note
+        body reads the sense while the index table reads the entry.
+        """
+        entry = make_entry("he zoomed away", "sentence")
+        llm.complete_entries([entry], client=FakeClient([TENSE_REPLY]), model="m")
+
+        assert entry.entry["pos"] == "sentence"
+        assert entry.entry["senses"][0]["pos"] == "sentence"
+
+    def test_phrase_pos_keeps_the_model_value(self):
+        """Only sentences are pinned; a phrase keeps the model's own label."""
+        entry = make_entry("give up", "phrase")
+        llm.complete_entries([entry], client=FakeClient([GOOD_REPLY]), model="m")
+
+        assert entry.entry["pos"] == "phrase"
+        assert entry.entry["senses"][0]["pos"] == "phrase"
+
 
 class TestPrompts:
     def test_sentence_prompt_focuses_on_pattern_not_meaning(self):
@@ -193,6 +229,38 @@ class TestPrompts:
         prompt = client.recorder[0]["messages"][1]["content"].lower()
         assert "sentence" in prompt
         assert "do not translate" in prompt
+
+    def test_sentence_prompt_forbids_the_word_level_reading(self):
+        """The old wording asked for the verb's meaning and got exactly that."""
+        entry = make_entry("what's up, what did he say?", "sentence")
+        client = FakeClient([GOOD_REPLY])
+        llm.complete_entries([entry], client=client, model="m")
+        prompt = client.recorder[0]["messages"][1]["content"].lower()
+        assert "not a word" in prompt
+        assert "single word" in prompt
+
+    def test_sentence_record_is_not_printed_twice(self):
+        """A sentence record bolds the whole sentence, so one line is enough.
+
+        ``find_sentence`` keeps the ``**`` markers, so ``word`` is a substring
+        of ``sentence`` and the old prompt stated the same text twice — which
+        read as an invitation to pick a word out of it.
+        """
+        entry = make_entry("what's up, what did he say?", "sentence")
+        client = FakeClient([GOOD_REPLY])
+        llm.complete_entries([entry], client=client, model="m")
+        prompt = client.recorder[0]["messages"][1]["content"]
+        assert "Bold text:" not in prompt
+        assert prompt.count("what's up") == 1
+
+    def test_phrase_record_keeps_its_context_line(self):
+        """A phrase's enclosing sentence is the only context it has."""
+        entry = make_entry("returning your call", "phrase")
+        client = FakeClient([GOOD_REPLY])
+        llm.complete_entries([entry], client=client, model="m")
+        prompt = client.recorder[0]["messages"][1]["content"]
+        assert "Bold text: 'returning your call'" in prompt
+        assert "Source sentence:" in prompt
 
     def test_phrase_prompt_mentions_meaning_and_synonyms(self):
         entry = make_entry("give up", "phrase")

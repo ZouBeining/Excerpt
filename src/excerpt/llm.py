@@ -93,11 +93,18 @@ _PHRASE_INSTRUCTION = (
     "synonyms in the `synonyms` array."
 )
 
+#: The sentence instruction states what the record is *not*.  An earlier
+#: version asked for "the vocabulary used, especially the verb: its form, its
+#: meaning here", and models obeyed literally: they picked one conspicuous
+#: word out of the sentence and wrote that word's dictionary sense into
+#: ``definition``.  Forbidding the word-level reading explicitly — and naming
+#: the pattern as the only legitimate subject — is what keeps the reply about
+#: the sentence rather than about a word inside it.
 _SENTENCE_INSTRUCTION = (
-    "The input is a full SENTENCE. Do NOT translate or explain the whole "
-    "sentence. Instead explain the sentence PATTERN and the vocabulary used, "
-    "especially the verb: its form, its meaning here, and how the pattern is "
-    "reused. Put the reusable part of the pattern in `shortDefs`."
+    "The input is a whole SENTENCE, not a word: do not translate it and "
+    "never define a single word from it. Explain the PATTERN: what it "
+    "conveys, when it is used, and the grammar worth reusing; put that "
+    "pattern in `shortDefs`. Set `pos` to \"sentence\"."
 )
 
 #: The JSON schema the model must satisfy.
@@ -108,11 +115,16 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
     "properties": {
         "pos": {
             "type": "string",
-            "description": "part of speech, e.g. 'phrase' or 'sentence pattern'",
+            "description": (
+                "part of speech; for a whole sentence use exactly 'sentence'"
+            ),
         },
         "definition": {
             "type": "string",
-            "description": "one-line English explanation",
+            "description": (
+                "one-line English explanation; for a sentence, the pattern's "
+                "meaning and use, never a single word"
+            ),
         },
         "examples": {
             "type": "array",
@@ -152,14 +164,41 @@ def _instruction_for(record_type: str) -> str:
     return _PHRASE_INSTRUCTION
 
 
+def _record_lines(entry: BoldEntry) -> list[str]:
+    """Return the record's own lines, with no duplicated text.
+
+    A sentence record bolds the whole sentence, and ``extractor.find_sentence``
+    keeps the ``**`` markers of the span in the sentence it returns — so
+    ``word`` is always a substring of ``sentence`` for a sentence record, and
+    printing both would state the same text twice.  Repeating it was another
+    nudge towards the word-level reading this stage is trying to avoid, so a
+    sentence is described by its one sentence line only.
+    """
+    if entry.type == TYPE_SENTENCE and entry.word and entry.word in entry.sentence:
+        return [f"Sentence: {entry.sentence!r}"]
+
+    lines = [f"Bold text: {entry.word!r}"]
+    if entry.sentence:
+        lines.append(f"Source sentence: {entry.sentence!r}")
+    return lines
+
+
 def _user_prompt(entry: BoldEntry) -> str:
-    """Build the per-record user message."""
+    """Build the per-record user message.
+
+    The record comes first and the rules last on purpose: the rules that decide
+    what the reply must look like are the last thing the model reads, which is
+    where the type-specific one has to win over the generic reply-format line
+    that follows it.  The record's own ``type`` is not printed separately —
+    :func:`_instruction_for` already names it, and a bare ``Type: sentence``
+    line invites the model to echo it back as the part of speech.
+    """
     return (
-        f"{_instruction_for(entry.type)}\n\n"
-        f"Bold text: {entry.word!r}\n"
-        f"Type: {entry.type}\n"
-        f"Source sentence: {entry.sentence!r}\n\n"
-        "Reply with JSON using these keys: "
+        "\n".join(_record_lines(entry))
+        + "\n\n"
+        + _instruction_for(entry.type)
+        + "\n\n"
+        + "Reply with JSON using these keys: "
         "pos (string), definition (string), examples (array of strings), "
         "synonyms (array of strings), antonyms (array of strings), "
         "shortDefs (array of strings). "
@@ -209,10 +248,21 @@ def _to_standard_entry(entry: BoldEntry, payload: dict[str, Any]) -> dict[str, A
     result["dictionary"] = LLM_DICTIONARY_NAME
     result["section"] = "alpha"
     result["offensive"] = False
-    result["pos"] = payload["pos"] or entry.type
+    # A sentence has no part of speech, and a model asked for one answers with
+    # whatever it can justify — "verb", "idiomatic expression", a tense.  The
+    # label is therefore pinned here rather than merely requested in the
+    # prompt, so nothing the model writes for ``pos`` can reach the disk.  One
+    # value feeds both the entry and its single sense, keeping the note body,
+    # the index table and the handout in agreement.
+    pos = (
+        TYPE_SENTENCE
+        if entry.type == TYPE_SENTENCE
+        else (payload["pos"] or entry.type)
+    )
+    result["pos"] = pos
     result["senses"] = [
         {
-            "pos": payload["pos"] or entry.type,
+            "pos": pos,
             "definition": payload["definition"],
             "examples": payload["examples"],
         }

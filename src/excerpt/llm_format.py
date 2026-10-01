@@ -44,7 +44,11 @@ __all__ = [
 #: folded into the LLM cache key (see ``llm_cache.cache_key``), so a single
 #: bump invalidates every stored completion at once without touching the
 #: cache file layout.
-PROMPT_VERSION = 1
+#:
+#: 2 — sentences are analysed as patterns and their ``pos`` is pinned to
+#:     ``sentence``; the sentence prompt and the ``pos``/``definition`` schema
+#:     descriptions changed with it, so every stored sentence reply is stale.
+PROMPT_VERSION = 2
 
 
 class DialectUnsupported(Exception):
