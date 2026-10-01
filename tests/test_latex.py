@@ -138,7 +138,23 @@ class TestEntryBlocks:
         entry = self._entry()
         entry["entry"]["inflections"] = [{"form": "directors", "label": "plural"}]
         text = "\n".join(latex._render_entry(entry, 1))
-        assert r"\wtag{Inflections}{plural directors}" in text
+        assert r"\wtag{Inflections:}{plural directors}" in text
+
+    def test_full_word_labels_keep_their_colon(self):
+        entry = self._entry()
+        text = "\n".join(latex._render_entry(entry, 1))
+        assert r"\wtag{Etymology:}{see direct}" in text
+        assert r"\wtag{First Use:}{15th century}" in text
+
+    def test_abbreviated_labels_drop_the_colon(self):
+        """``Syn.`` ends in its own period, so no colon may follow it."""
+        entry = self._entry()
+        entry["entry"]["antonyms"] = ["subordinate"]
+        text = "\n".join(latex._render_entry(entry, 1))
+        assert r"\wtag{Syn.}{manager}" in text
+        assert r"\wtag{Anton.}{subordinate}" in text
+        assert "Syn.:" not in text
+        assert "Anton.:" not in text
 
     def test_only_the_entry_bold_is_marked(self):
         entry = self._entry(

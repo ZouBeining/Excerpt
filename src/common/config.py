@@ -227,6 +227,37 @@ def abbreviate_pos(pos: str) -> str:
     )
 
 
+#: Printed between a tag's label and its content, as in ``Etymology: ...``.
+TAG_LABEL_SEPARATOR = ":"
+
+#: Printed between a tag's label and its content when the label is already an
+#: abbreviation.  ``Syn.`` and ``Anton.`` end in their own marker, so a colon
+#: after them would read as the doubled ``Syn.:``.
+TAG_ABBREVIATION_SEPARATOR = ""
+
+
+def tag_label(
+    label: str,
+    separator: str = TAG_LABEL_SEPARATOR,
+    *,
+    abbreviation_separator: str = TAG_ABBREVIATION_SEPARATOR,
+) -> str:
+    """Return *label* joined to the punctuation that introduces its content.
+
+    A label ending in a period — ``Syn.``, ``Anton.``, ``E.g.`` — is an
+    abbreviation carrying its own terminator, so a colon after it would double
+    the punctuation into ``Syn.:``.  Such a label takes *abbreviation_separator*
+    instead: nothing in LaTeX, where the macro supplies its own spacing, and a
+    plain space in Markdown, where label and content share one line.
+    """
+    text = str(label or "").strip()
+    if not text:
+        return text
+    if text.endswith("."):
+        return f"{text}{abbreviation_separator}"
+    return f"{text}{separator}"
+
+
 DEFAULT_DICT_CHOICE = "MW"
 
 #: LLM completion is opt-in; ``USE_LLM`` in ``.env`` or ``--use-llm`` turns it on.

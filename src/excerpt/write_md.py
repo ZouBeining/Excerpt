@@ -27,6 +27,7 @@ from common.config import (
     BoldEntry,
     abbreviate_pos,
     get_dict_config,
+    tag_label,
 )
 
 from .bold import render_markdown_sentence
@@ -121,6 +122,11 @@ def _render_senses(entry_payload: dict[str, Any]) -> list[str]:
         return lines
 
     lines.append(f"**{MD_LABELS['definition']}**")
+    # ``E.g.`` is an abbreviation, so it takes a space where a full-word label
+    # would take the colon; ``E.g.：`` would double the punctuation.
+    example_label = tag_label(
+        MD_LABELS["examples"], "：", abbreviation_separator=" "
+    )
     for sense in senses:
         if not isinstance(sense, dict):
             continue
@@ -133,7 +139,7 @@ def _render_senses(entry_payload: dict[str, Any]) -> list[str]:
         for example in sense.get("examples") or []:
             text = str(example).strip()
             if text:
-                lines.append(f"  - {MD_LABELS['examples']}：{text}")
+                lines.append(f"  - {example_label}{text}")
     return lines
 
 

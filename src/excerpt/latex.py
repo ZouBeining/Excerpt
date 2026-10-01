@@ -40,6 +40,7 @@ from common.config import (
     get_dict_config,
     get_session_settings,
     normalize_title,
+    tag_label,
 )
 
 from .bold import target_bold_segments
@@ -194,7 +195,12 @@ def _render_entry(entry: dict[str, Any], index: int) -> list[str]:
 
 
 def _render_tag(label: str, value: Any) -> list[str]:
-    r"""Render one ``\wtag{label}{content}`` line, if there is content."""
+    r"""Render one ``\wtag{label}{content}`` line, if there is content.
+
+    The label arrives already carrying its separator: ``Syn.`` is an
+    abbreviation and stays bare, while a full word such as ``Etymology`` takes
+    the colon.  ``\wtag`` itself only supplies the spacing.
+    """
     if not value:
         return []
     if isinstance(value, (list, tuple)):
@@ -215,7 +221,9 @@ def _render_tag(label: str, value: Any) -> list[str]:
 
     if not content:
         return []
-    return [f"\\wtag{{{escape_latex(label)}}}{{{escape_latex(content)}}}"]
+    return [
+        f"\\wtag{{{escape_latex(tag_label(label))}}}{{{escape_latex(content)}}}"
+    ]
 
 
 def _render_entries_tex(entries: Sequence[dict[str, Any]], art: Artifacts) -> str:

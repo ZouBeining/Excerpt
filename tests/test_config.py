@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.config import abbreviate_pos
+from common.config import abbreviate_pos, tag_label
 
 
 class TestAbbreviatePos:
@@ -61,3 +61,31 @@ class TestAbbreviatePos:
     @pytest.mark.parametrize("raw", ["", None])
     def test_empty_input(self, raw):
         assert abbreviate_pos(raw) == ""
+
+
+class TestTagLabel:
+    """Abbreviation and colon must never meet: ``Syn.`` never becomes ``Syn.:``."""
+
+    def test_abbreviation_takes_no_colon(self):
+        assert tag_label("Syn.") == "Syn."
+        assert tag_label("Anton.") == "Anton."
+        assert tag_label("E.g.") == "E.g."
+
+    def test_full_word_takes_the_colon(self):
+        assert tag_label("Etymology") == "Etymology:"
+        assert tag_label("First Use") == "First Use:"
+        assert tag_label("Inflections") == "Inflections:"
+
+    def test_the_separator_is_configurable(self):
+        assert tag_label("Etymology", "\uff1a") == "Etymology\uff1a"
+
+    def test_abbreviation_uses_the_abbreviation_separator(self):
+        assert tag_label("E.g.", "\uff1a", abbreviation_separator=" ") == "E.g. "
+
+    def test_surrounding_whitespace_is_dropped(self):
+        assert tag_label("  Syn.  ") == "Syn."
+        assert tag_label("  Etymology  ") == "Etymology:"
+
+    @pytest.mark.parametrize("raw", ["", None, "   "])
+    def test_empty_input_stays_empty(self, raw):
+        assert tag_label(raw) == ""

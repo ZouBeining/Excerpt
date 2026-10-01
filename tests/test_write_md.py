@@ -106,6 +106,15 @@ class TestEntryRendering:
         assert "**Syn.**" in text
         assert "manager" in text
 
+    def test_example_label_drops_the_colon(self, tmp_path):
+        """``E.g.`` is an abbreviation, so a space replaces the colon."""
+        art = artifacts("test", "MW", str(tmp_path))
+        text = write_md.render_note_md(
+            [make_entry(entry=DEFINED_ENTRY)], {"items": []}, art
+        )
+        assert "  - E.g. director of religious education" in text
+        assert "E.g.\uff1a" not in text
+
     def test_pronunciation_is_rendered(self, tmp_path):
         art = artifacts("test", "MW", str(tmp_path))
         text = write_md.render_note_md(

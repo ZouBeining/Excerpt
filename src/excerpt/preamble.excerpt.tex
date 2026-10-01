@@ -115,10 +115,13 @@
 
 %%-------------------------------------------------- 附注行：标签 + 内容
 % 用于词形变化 / 近义词 / 反义词 / 词源 / 首次使用。
-% \wtag{词形变化}{past tense: abandoned}
+% 标签自带引入内容的标点，由渲染器决定：完整单词带冒号（Etymology:），
+% 已经是缩写的标签（Syn. / Anton.）不再补冒号，否则会读成 "Syn.:"。
+% \wtag{Etymology:}{see direct}
+% \wtag{Syn.}{calling back, phoning back}
 \newcommand{\wtag}[2]{%
   \par\nopagebreak\smallskip
-  \hspace*{\wIndent}{\color{wPos}\bfseries #1:\,}\ {\color{wInk}#2}%
+  \hspace*{\wIndent}{\color{wPos}\bfseries #1\,}\ {\color{wInk}#2}%
   \par\nopagebreak
 }
 
