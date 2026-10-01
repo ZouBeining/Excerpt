@@ -293,6 +293,13 @@ excerpt-latex .test_out/test.mw.words.json --compile    # 顺便编译出 PDF
 
 短语和句子不会查词典，只会写入 `errors.json`，若开启 LLM 则由 LLM 补全。
 
+LLM 补全按类型分工：**短语**分析意思、使用场景和近义/反义表达；**句子**分析句型  
+本身——它传达什么、什么时候用、可以复用的语法——而不是句意，更不是句中某个单词  
+的词义。句子条目的 `pos` 固定为字面量 `sentence`（在代码里写死，模型给什么都不采  
+用）：它在 `.words.json` 与 `.index.md` 里就是 `sentence`，在 Markdown 正文里显示为  
+`*sentence*`，在 LaTeX 里由 `\wsense` 宏渲染成 `[sentence]`。例句要求约两句完整、  
+地道的成人语域句子，而不是课本水平的简单句。
+
 同一单词多次出现会按归一化键合并（`word.lower().strip("'-")`），  
 保留首次出现的大小写和行号。
 
@@ -315,7 +322,7 @@ pytest                                   # 已激活虚拟环境时
 .venv/Scripts/python.exe -m pytest       # Windows 直接指定解释器
 ```
 
-预期结果：**169 passed**。
+预期结果：**402 passed**。
 
 ### 2. 常用测试命令
 
@@ -341,15 +348,20 @@ pytest -x                                   # 首个失败即停
 
 **各文件覆盖范围**：
 
-| 文件                  | 用例数 | 覆盖内容                                        |
-| ------------------- | --- | ------------------------------------------- |
-| `test_extractor.py` | 19  | 加粗提取、单词判定、类型分类、去重合并                         |
-| `test_lookup.py`    | 44  | 缓存读写、HTTP 重试与分类、MW markup 清洗、MW 数据映射、写 JSON |
-| `test_llm.py`       | 20  | 提示词构造、schema 校验、幂等跳过已 filled 记录、错误摘要        |
-| `test_llm_check.py` | 25  | LLM 预检：指纹、缓存读写、HTTP 分类、端点拼接、错误解包            |
-| `test_write_md.py`  | 11  | 笔记 / 索引渲染、表头统计                              |
-| `test_latex.py`     | 49  | LaTeX 转义、条目渲染、文件布局、`xelatex` 查找与编译（含缺工具回退）  |
-| `test_cli.py`       | 34  | 参数解析、优先级、输出目录解析、各阶段编排、LLM 预检门控              |
+| 文件                     | 用例数 | 覆盖内容                                              |
+| ---------------------- | --- | ------------------------------------------------- |
+| `test_extractor.py`    | 19  | 加粗提取、单词判定、类型分类、去重合并                               |
+| `test_bold.py`         | 19  | 加粗标记的识别，以及「只标记本条自身加粗」的渲染规则                        |
+| `test_config.py`       | 36  | 配置优先级、词性缩写、tag 标签分隔符                              |
+| `test_lookup.py`       | 44  | 缓存读写、HTTP 重试与分类、MW markup 清洗、MW 数据映射、写 JSON       |
+| `test_llm.py`          | 68  | 提示词构造、句子 `pos` 固定、schema 校验、幂等跳过已 filled 记录、缓存、并发、错误摘要 |
+| `test_llm_cache.py`    | 29  | 补全缓存：文件名净化、缓存键、读写与版本                              |
+| `test_llm_check.py`    | 27  | LLM 预检：指纹、缓存读写、HTTP 分类、端点拼接、错误解包                   |
+| `test_llm_format.py`   | 27  | `response_format` 候选链、降级判定、进程内探测记忆                 |
+| `test_llm_reasoning.py`| 10  | 思考抑制候选链与拒绝判定                                      |
+| `test_write_md.py`     | 19  | 笔记 / 索引渲染、表头统计、词性缩写                               |
+| `test_latex.py`        | 59  | LaTeX 转义、条目渲染、文件布局、`xelatex` 查找与编译（含缺工具回退）         |
+| `test_cli.py`          | 45  | 参数解析、优先级、输出目录解析、各阶段编排、LLM 预检门控                    |
 
 > Windows 上 pytest 清理临时目录时可能打印 `safe-delete ... trash-failed` 警告，  
 > 这是系统回收站机制的限制，**不影响测试结果**，可忽略。
@@ -416,7 +428,7 @@ src/
     lemmatizer.py           # LemmInflect 原形还原
     mw_api.py  mw_data.py  mw_markup.py     # Merriam-Webster
     fd_api.py  fd_data.py                   # Free Dictionary
-tests/                      # 202 个离线测试
+tests/                      # 402 个离线测试
 docs/                       # JSON / Markdown 模板与 API 返回示例
 ```
 
