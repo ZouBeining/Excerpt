@@ -1,10 +1,10 @@
 # test
 
 - source：`test.md`
-- valid_entries：61  /  53 bolded records
+- valid_entries：2  /  2 bolded records
 - dict：Merriam-Webster
-- lemmatized：8 （flattering→flatter, deformed→deform, embarrassing→embarrass, whining→whine, disappointed→disappoint, screaming→scream, bummed→bum, spotted→spot）
-- cache_hit：30
+- lemmatized：0
+- cache_hit：1
 
 ---
 
@@ -17,7 +17,7 @@
 - source: cache
 - dict: mw
 
-`US` /də-ˈrek-tər/
+/də-ˈrek-tər/ /dī-/
 
 **Definition**
 - *n.* the head of an organized group or administrative unit (such as a bureau or school)
@@ -33,6 +33,8 @@
 
 **First Use**
 - 15th century
+
+
 
 ### 2. returning your call
 
