@@ -48,7 +48,12 @@ __all__ = [
 #: 2 — sentences are analysed as patterns and their ``pos`` is pinned to
 #:     ``sentence``; the sentence prompt and the ``pos``/``definition`` schema
 #:     descriptions changed with it, so every stored sentence reply is stale.
-PROMPT_VERSION = 2
+#:
+#: 3 — the prompt asks for longer, harder examples and idiomatic
+#:     synonyms/antonyms, and the scaffolding (system prompt, key list, type
+#:     line) was condensed around it.  Every stored reply answers an
+#:     instruction that no longer exists.
+PROMPT_VERSION = 3
 
 
 class DialectUnsupported(Exception):

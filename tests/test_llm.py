@@ -280,6 +280,44 @@ class TestPrompts:
         prompt = client.recorder[0]["messages"][1]["content"].lower()
         assert "english" in prompt
 
+    def test_example_and_antonym_quality_guidance_is_present(self):
+        """Examples must be adult prose, not textbook sentences.
+
+        The distinction is the whole point of the instruction, so the wording
+        that carries it is asserted rather than left to drift.
+        """
+        entry = make_entry()
+        client = FakeClient([GOOD_REPLY])
+        llm.complete_entries([entry], client=client, model="m")
+        prompt = client.recorder[0]["messages"][1]["content"].lower()
+        assert "about two" in prompt
+        assert "school-textbook" in prompt
+        assert "idiomatic" in prompt
+        assert "antonym" in prompt
+
+    def test_quality_guidance_reaches_both_record_types(self):
+        """One instruction covers phrases and sentences alike."""
+        for type_ in ("phrase", "sentence"):
+            entry = make_entry("give up", type_)
+            client = FakeClient([GOOD_REPLY])
+            llm.complete_entries([entry], client=client, model="m")
+            prompt = client.recorder[0]["messages"][1]["content"].lower()
+            assert "school-textbook" in prompt
+
+    def test_reply_contract_is_stated_in_the_prompt(self):
+        """The schema is not always sent, so the keys must survive without it.
+
+        ``response_format`` walks down to "send nothing", which makes the
+        prompt the only statement of the required keys on the last rungs.
+        """
+        entry = make_entry()
+        client = FakeClient([GOOD_REPLY])
+        llm.complete_entries([entry], client=client, model="m", use_schema=False)
+        assert "response_format" not in client.recorder[0]
+        prompt = client.recorder[0]["messages"][1]["content"].lower()
+        for key in ("pos", "definition", "examples", "synonyms", "antonyms", "shortdefs"):
+            assert key in prompt
+
     def test_structured_output_is_requested_by_default(self):
         entry = make_entry()
         client = FakeClient([GOOD_REPLY])
@@ -311,6 +349,10 @@ class TestRequestParameters:
         sent = client.recorder[0]
         assert sent["timeout"] == 60.0
         assert sent["max_tokens"] == llm.MAX_COMPLETION_TOKENS
+        # Pinned as a literal as well: the budget has to leave room for the
+        # full-length examples the prompt asks for, so shrinking it back to the
+        # old 400 is a real regression, not a free tweak.
+        assert sent["max_tokens"] == 500
 
     def test_timeout_follows_the_configured_value(self):
         config.configure(
@@ -993,3 +1035,69 @@ class TestLlmCacheIntegration:
         )
         assert reused.entry == entry.entry
 
+
+
+class TestPackageSurface:
+    """``llm`` is a package, so its entry points must be reachable from it.
+
+    ``excerpt.cli`` calls ``llm.run`` as an *attribute* of the imported module,
+    which is what keeps the CLI tests' monkeypatching effective.  These
+    re-exports are the contract that makes that spelling possible.
+    """
+
+    def test_the_stage_is_importable_from_the_package_root(self):
+        import llm as llm_package
+
+        assert callable(llm_package.run)
+        assert callable(llm_package.complete_entries)
+        assert callable(llm_package.schema_for)
+        assert isinstance(llm_package.SYSTEM_PROMPT, str)
+
+    def test_cli_reaches_the_stage_through_the_package(self, monkeypatch):
+        """Patching the package attribute must reach the CLI's call site.
+
+        ``from llm import run`` in ``cli`` would bind the function by value and
+        send the test to the network; this asserts the attribute access that
+        makes the patch land.
+        """
+        import llm as llm_package
+
+        seen: list = []
+        monkeypatch.setattr(
+            llm_package, "run", lambda entries, *a, **k: seen.append(entries) or entries
+        )
+        assert llm_package.run([]) == []
+        assert seen == [[]]
+
+
+class TestPackageSurface:
+    """``llm`` is a package, so its entry points must be reachable from it.
+
+    ``excerpt.cli`` calls ``llm.run`` as an *attribute* of the imported module,
+    which is what keeps the CLI tests' monkeypatching effective.  These
+    re-exports are the contract that makes that spelling possible.
+    """
+
+    def test_the_stage_is_importable_from_the_package_root(self):
+        import llm as llm_package
+
+        assert callable(llm_package.run)
+        assert callable(llm_package.complete_entries)
+        assert callable(llm_package.schema_for)
+        assert isinstance(llm_package.SYSTEM_PROMPT, str)
+
+    def test_cli_reaches_the_stage_through_the_package(self, monkeypatch):
+        """Patching the package attribute must reach the CLI's call site.
+
+        ``from llm import run`` in ``cli`` would bind the function by value and
+        send the test to the network; this asserts the attribute access that
+        makes the patch land.
+        """
+        import llm as llm_package
+
+        seen: list = []
+        monkeypatch.setattr(
+            llm_package, "run", lambda entries, *a, **k: seen.append(entries) or entries
+        )
+        assert llm_package.run([]) == []
+        assert seen == [[]]

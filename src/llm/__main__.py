@@ -64,8 +64,11 @@ __all__ = ["SYSTEM_PROMPT", "complete_entries", "run", "schema_for"]
 #: Upper bound on the tokens a completion may spend.  A six-field structured
 #: reply needs a few hundred at most; the ceiling exists to stop a model that
 #: ignores the reasoning-suppression hints from running away on a runaway
-#: chain of thought.
-MAX_COMPLETION_TOKENS = 400
+#: chain of thought.  It sits at 500 rather than 400 to leave room for the two
+#: full-length example sentences the prompt asks for: a model that runs out of
+#: budget mid-string emits truncated JSON, and a truncated reply costs a retry
+#: rather than a shorter answer.
+MAX_COMPLETION_TOKENS = 500
 
 #: How many ordinary failures in a row abort the whole stage.  A burst like
 #: this means the endpoint is down or throttling, not that one record is odd.
@@ -91,14 +94,13 @@ class ReasoningUnsupported(RuntimeError):
 
 SYSTEM_PROMPT = (
     "You are a lexicographer writing concise English study notes for a "
-    "language learner. Always reply with a single JSON object and nothing "
-    "else. Never invent etymology, first-use dates, or metadata fields."
+    "language learner. Reply with one JSON object only. Never invent "
+    "etymology, first-use dates, or metadata."
 )
 
 _PHRASE_INSTRUCTION = (
-    "The input is a multi-word PHRASE. Focus on what the phrase means, when a "
-    "speaker would use it, and any close synonymous expressions. Give the "
-    "synonyms in the `synonyms` array."
+    "The input is a PHRASE, not a sentence. Explain what it means and when a "
+    "speaker would use it."
 )
 
 #: The sentence instruction states what the record is *not*.  An earlier
@@ -113,6 +115,33 @@ _SENTENCE_INSTRUCTION = (
     "never define a single word from it. Explain the PATTERN: what it "
     "conveys, when it is used, and the grammar worth reusing; put that "
     "pattern in `shortDefs`. Set `pos` to \"sentence\"."
+)
+
+#: What every record's examples and synonym sets must look like.
+#:
+#: Kept separate from the two type instructions because it applies to both, and
+#: shared by them rather than repeated: the alternative was the same sentence
+#: twice, which costs the tokens the split saves.  The length requirement is
+#: deliberately blunt — models default to textbook sentences ("The car zoomed
+#: past us.") unless told the register they are writing for, and a study note
+#: whose examples are easier than the text being studied teaches nothing.
+_QUALITY_INSTRUCTION = (
+    "Write about two examples: full natural sentences an educated adult would "
+    "write, reusing the phrase or pattern, never school-textbook ones. Make "
+    "`synonyms` and `antonyms` idiomatic, not flat words."
+)
+
+#: The reply contract, stated in the prompt itself.
+#:
+#: This is not redundant with the schema.  ``response_format`` is walked from
+#: full JSON Schema down to "send nothing at all" (see :mod:`llm.format`), and
+#: on the last two rungs of that walk the prompt is the *only* statement of the
+#: required keys.  It is kept terse because the schema carries the types
+#: whenever the endpoint accepts one, and because the system prompt above
+#: already establishes that the answer is a JSON object.
+_REPLY_TAIL = (
+    "Keys: pos, definition, examples, synonyms, antonyms, shortDefs. "
+    "All strings in English."
 )
 
 #: The JSON schema the model must satisfy.
@@ -137,21 +166,25 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
         "examples": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "one to three short English example sentences",
+            "description": (
+                "about two full, sophisticated English example sentences that "
+                "reuse the phrase or pattern"
+            ),
         },
         "synonyms": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "near-synonymous expressions (phrases only)",
+            "description": "idiomatic near-synonymous expressions",
         },
         "antonyms": {
             "type": "array",
             "items": {"type": "string"},
+            "description": "idiomatic near-opposite expressions",
         },
         "shortDefs": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "compact glosses",
+            "description": "compact glosses; for a sentence, the reusable pattern",
         },
     },
 }
@@ -206,11 +239,9 @@ def _user_prompt(entry: BoldEntry) -> str:
         + "\n\n"
         + _instruction_for(entry.type)
         + "\n\n"
-        + "Reply with JSON using these keys: "
-        "pos (string), definition (string), examples (array of strings), "
-        "synonyms (array of strings), antonyms (array of strings), "
-        "shortDefs (array of strings). "
-        "Every string must be in English."
+        + _QUALITY_INSTRUCTION
+        + "\n\n"
+        + _REPLY_TAIL
     )
 
 
