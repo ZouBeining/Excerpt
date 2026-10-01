@@ -54,7 +54,8 @@ cp .env.example .env
 | `DICT_CHOICE`                           | 词典：`MW`（Merriam-Webster）或 `FD`（Free Dictionary）      | `MW`                                 |
 | `DICT_API_KEY`                          | 词典 API Key；`MW` 必填，`FD` 不需要                          | 空                                    |
 | `OUTPUT_DIR`                            | 输出目录                                                 | `.{title}_out`                       |
-| `EXCERPT_CACHE_PATH`                    | 缓存文件路径                                               | `~/.cache/excerpt/<slug>.cache.json` |
+| `EXCERPT_CACHE_PATH`                    | 词典缓存文件路径                                             | `~/.cache/excerpt/<slug>.cache.json` |
+| `EXCERPT_CACHE_DIR`                     | 整个缓存目录，一次覆盖词典 / LLM 补全 / 预检三个缓存                       | `~/.cache/excerpt`                   |
 | `COMPILE_LATEX`                         | 是否把 `.tex` 编译成 PDF（`True`/`False`）                   | `False`                              |
 | `XELATEX`                               | `xelatex` 可执行文件路径（不在 PATH 时用）                        | 自动探测                                 |
 | `USE_LLM`                               | 是否用 LLM 补全非单词条目（`True`/`False`）                      | `False`                              |
@@ -118,14 +119,15 @@ excerpt notes.md --no-cache
 只要 `USE_LLM=True`，程序在**任何处理开始之前**会先用一个最小请求探测 LLM  
 配置是否可用（`llm/check.py`）：
 
-- **配置有效** → 打印 `[llm] configuration verified: ok`，继续执行。
+- **配置有效** → 打印 `[llm] configuration verified: ok`（复用了上次的结论则打印  
+  `[llm] configuration cached: ok`），继续执行。
 - **配置无效**（401 / 403 / 404 / 缺字段 / 网络不可达）→ 打印一行 `[error]`  
   并安全退出（返回码 `3`），此时不会浪费词典配额。
 - **配置有效但暂时不可用**（429 限流 / 5xx / 上游拒绝服务，例如地区限制）  
   → 打印 `[warn]` 并**继续执行**，避免免费额度临时繁忙时整个程序无法运行。
 
 验证通过的结果会缓存到 `~/.cache/excerpt/llm.check.json`；缓存键是  
-`base_url + model + API Key 的 SHA-256`（从不写入明文 Key）。只要配置没变且  
+`CHECK_VERSION + base_url + model + API Key 的 SHA-256`（从不写入明文 Key）。只要配置没变且  
 之前有效，后续运行会直接复用，不再浪费请求配额。**失败与临时故障都不会写缓存**，  
 所以修好配置后立即生效。
 
@@ -197,8 +199,10 @@ LLM_REASONING={"reasoning": {"enabled": false}}
 | `--llm-workers`                                 | LLM 并发数，默认 `1`（串行，与旧行为一致）                 |
 | `--env-file`                                    | 指定另一个 `.env` 文件                           |
 | `--timeout` / `--retry` / `--delay` / `--proxy` | 网络参数，覆盖 `.env`                            |
-| `--cache-path`                                  | 指定缓存文件位置                                  |
+| `--cache-path`                                  | 指定词典缓存文件位置                                |
 | `--no-cache`                                    | 不使用本地缓存                                   |
+| `--llm-cache-path`                              | 指定 LLM 补全缓存文件位置                           |
+| `--no-llm-cache`                                | 忽略且不写入 LLM 补全缓存                           |
 | `--no-lemma`                                    | 关闭 LemmInflect 原形还原                       |
 | `--no-lookup`                                   | 跳过词典查询（**不影响 LLM 阶段**）                    |
 | `--no-latex`                                    | 不生成 LaTeX                                 |
@@ -231,12 +235,24 @@ LLM_REASONING={"reasoning": {"enabled": false}}
 | `main.tex`、`preamble.excerpt.tex` | `latex` 复制                          | LaTeX 主文件与导言区          |
 | `entries/test.tex`                | `latex`                             | 所有条目的 subfile          |
 
+### 缓存
 
-缓存（全局副作用，不在输出目录）：
+缓存是**全局副作用，不在输出目录**，统一放在 `~/.cache/excerpt/`（可用 `EXCERPT_CACHE_DIR`  
+整体搬走）：
 
-```
-~/.cache/excerpt/mw.cache.json     # 存词典 API 的原始返回，便于离线复用
-```
+| 文件                      | 内容                        | 如何忽略 / 改路径                                     |
+| ----------------------- | ------------------------- | --------------------------------------------- |
+| `{dict_slug}.cache.json` | 词典 API 的**原始返回**，便于离线复用    | `--no-cache` 忽略；`--cache-path` 改路径            |
+| `{model}.cache.json`     | LLM 补全的**已通过校验的 payload** | `--no-llm-cache` 忽略；`--llm-cache-path` 改路径    |
+| `llm.check.json`        | LLM 预检的「配置可用」结论            | `--no-cache` 强制重新探测                           |
+
+模型名中的非法字符（尤其 `/` 和 `:`）会替换为 `_`，所以 `vendor/model:free` 对应  
+`vendor_model_free.cache.json`。
+
+LLM 补全缓存的键是 `sha256(词条文本 | 类型 | PROMPT_VERSION)`：**模型名不进键**（它就是文件名），  
+而 `PROMPT_VERSION` 在提示词或期望返回结构变化时自增，因此改提示词会让全部旧答案一次失效。  
+缓存只存**已经通过校验**的回复，失败（超时 / 429 / 5xx / 坏 JSON）**永不落盘** —— 否则一次临时  
+故障就被永久冻结。缓存命中时日志显示 `ok (cache)`，可以据此看出哪些条目没有发请求。
 
 ### `.errors.json` 的计数器
 
@@ -322,7 +338,7 @@ pytest                                   # 已激活虚拟环境时
 .venv/Scripts/python.exe -m pytest       # Windows 直接指定解释器
 ```
 
-预期结果：**402 passed**。
+预期结果：**409 passed**。
 
 ### 2. 常用测试命令
 
@@ -353,6 +369,7 @@ pytest -x                                   # 首个失败即停
 | `test_extractor.py`    | 19  | 加粗提取、单词判定、类型分类、去重合并                               |
 | `test_bold.py`         | 19  | 加粗标记的识别，以及「只标记本条自身加粗」的渲染规则                        |
 | `test_config.py`       | 36  | 配置优先级、词性缩写、tag 标签分隔符                              |
+| `test_docs.py`         | 7   | 文档与代码同步：`docs/template.*` 可重新生成、`.env.example` 键完整、三处版本号一致 |
 | `test_lookup.py`       | 44  | 缓存读写、HTTP 重试与分类、MW markup 清洗、MW 数据映射、写 JSON       |
 | `test_llm.py`          | 68  | 提示词构造、句子 `pos` 固定、schema 校验、幂等跳过已 filled 记录、缓存、并发、错误摘要 |
 | `test_llm_cache.py`    | 29  | 补全缓存：文件名净化、缓存键、读写与版本                              |
@@ -428,7 +445,7 @@ src/
     lemmatizer.py           # LemmInflect 原形还原
     mw_api.py  mw_data.py  mw_markup.py     # Merriam-Webster
     fd_api.py  fd_data.py                   # Free Dictionary
-tests/                      # 402 个离线测试
+tests/                      # 409 个离线测试
 docs/                       # JSON / Markdown 模板与 API 返回示例
 ```
 
