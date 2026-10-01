@@ -32,7 +32,7 @@ docs/ 目录下还有一份 MW API 的返回示例，供你参考。
 ### 处理步骤和输出
 
 - `excerpt/cli.py`: 总管线, 下面的所有子模块最终都汇总到 `cli.py` 中调用. 不允许对它做大的修改. 其中不应该包含任何与词典选择判断有关的逻辑——这些判断统一由 `common/config.py` 提供, 子模块通过 `config.get_dict_config()` 获取当前词典配置, 不得硬编码合法词典选项.
-  - `common/config.py`: 用于配置需要全局调用的变量和函数. 模块 `excerpt` 和 `lookup` 中的程序都需要调用这个文件, 我们出于避免循环引用的考虑把它放在这里.
+  - `common/config.py`: 用于配置需要全局调用的变量和函数. `excerpt`、`lookup`、`llm` 三个模块中的程序都需要调用这个文件, 我们出于避免循环引用的考虑把它放在这里.
   - 调用顺序.
     1. `excerpt/extractor`
     2. `lookup` (查询 + 写 `.words.json` / `.errors.json`)
@@ -156,6 +156,11 @@ write_json.py
 
 ### 模板说明
 
+`docs/` 下的 `template.*` 既是输出样例, 也是渲染器的参照. `tests/test_docs.py` 会把
+`template.md` / `template.index.md` 与「用当前渲染器、以这两份 JSON 为输入重新生成的结果」
+**逐字节比对**, 所以**渲染行为一改就必须重新生成这两份样例**, 不能手改. 同一个测试还要求
+`.env.example` 的键集合与「`src/` 下所有 `os.getenv` / `os.environ.get` 读到的键」完全一致.
+
 #### template.words.json
 
 - 所有 `.words.json` 条目的 `entry` 字段必须与 `config.empty_entry()` 的键完全一致, 缺的键补空值.
@@ -188,7 +193,8 @@ write_json.py
 
 ### 发版和 git commit
 
-- 自己处理 `pyproject.toml` 和 `uv.lock` 的相关问题. 不允许乱加版本号, 现在的初始版本好是 `0.1.0`, 则你的版本应该从 `0.1.1` 而不是 `0.2.0` 开始. 完成初始功能并通过 `pytest` 后发 `0.1.1`；之后每个影响功能的 bug 修复发 patch 版本.
+- 自己处理 `pyproject.toml` 和 `uv.lock` 的相关问题. 不允许乱加版本号, 现在的初始版本号是 `0.1.0`, 则你的版本应该从 `0.1.1` 而不是 `0.2.0` 开始. 完成初始功能并通过 `pytest` 后发 `0.1.1`；之后每个影响功能的 bug 修复发 patch 版本.
+- **版本号共写在三处, 必须同时更新**: `pyproject.toml` 的 `[project].version`（唯一权威来源）、`uv.lock` 中 `excerpt` 那一项（镜像它）、`src/excerpt/__init__.py` 的 `__version__`. `tests/test_docs.py` 会同时校验这三者一致, 不一致就测试失败.
 
 - 按照 `git-commit-skill` 的要求, 进行原子化的 git commit.
 
