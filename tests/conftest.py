@@ -57,9 +57,9 @@ def isolated_env(monkeypatch, tmp_path):
     config.configure(dict_choice="MW", use_llm=False, env_path="")
     # The reasoning- and dialect-probe verdicts are module-level caches, so
     # they must not leak from one test into the next.
-    for module_name in ("llm_reasoning", "llm_format"):
+    for module_name in ("reasoning", "format"):
         try:
-            module = importlib.import_module(f"excerpt.{module_name}")
+            module = importlib.import_module(f"llm.{module_name}")
         except ImportError:  # pragma: no cover - module added in a later stage
             continue
         module.reset_probe_cache()

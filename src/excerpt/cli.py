@@ -4,7 +4,7 @@ Five stages run in a fixed order, exactly as AGENTS.md requires:
 
 1. ``excerpt.extractor``   parse the Markdown, write ``.index.json`` / index ``.md``
 2. ``lookup``              query the dictionary, write ``.words.json`` / ``.errors.json``
-3. ``excerpt.llm``         complete non-word entries, update both JSON files
+3. ``llm``                 complete non-word entries, update both JSON files
 4. ``excerpt.write_md``    render ``.md`` and ``.index.md`` from the final data
 5. ``excerpt.latex``       render the LaTeX document set
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import llm
 from common import config
 from common.config import (
     CODE_OK,
@@ -25,10 +26,10 @@ from common.config import (
     normalize_title,
 )
 
-from . import llm, write_md
+from . import write_md
 from .arg import build_parser
 from .extractor import extract_bold_entries, write_index
-from .llm_check import check_llm_config
+from llm.check import check_llm_config
 
 
 def _resolve_out_dir(args, title: str, source: Path) -> Path:
@@ -207,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     if config.get_use_llm():
         from common.config import get_openai_settings
 
-        from . import llm_cache
+        from llm import cache as llm_cache
 
         cache_path = (
             str(args.llm_cache_path) if args.llm_cache_path else None

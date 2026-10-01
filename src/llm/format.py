@@ -18,7 +18,7 @@ candidate cannot itself be refused on format grounds, a schema disagreement
 can never abort a run — the prompt already spells out the required keys and
 ``llm._validate`` enforces them locally.
 
-Nothing here imports the rest of ``excerpt``; the module is a leaf that only
+Nothing here imports a sibling module; the module is a leaf that only
 needs the standard library, so it cannot create an import cycle.
 """
 
@@ -41,7 +41,7 @@ __all__ = [
 
 
 #: Bump whenever the prompt or the expected reply shape changes.  It is
-#: folded into the LLM cache key (see ``llm_cache.cache_key``), so a single
+#: folded into the LLM cache key (see ``llm.cache.cache_key``), so a single
 #: bump invalidates every stored completion at once without touching the
 #: cache file layout.
 #:
@@ -80,7 +80,7 @@ _SCHEMA_PLACEHOLDER = "__SCHEMA__"
 #: * ``guided_json`` / ``guided_choice`` — these are *separate top-level*
 #:   fields (a vLLM extension), not alternative ``response_format`` values.
 #:   Cramming them in here answers 400.  Supporting them would be a
-#:   "field candidate" problem like :mod:`excerpt.llm_reasoning`, which is a
+#:   "field candidate" problem like :mod:`llm.reasoning`, which is a
 #:   different axis and out of scope;
 #: * ``{"type": "text"}`` — equivalent to sending nothing, no extra signal;
 #: * the early-beta top-level ``schema`` + ``strict`` pair — deprecated, and
@@ -249,7 +249,7 @@ def reset_probe_cache() -> None:
 class SchemaState:
     """Walk the candidate list, remembering the winner for the process.
 
-    Mirrors :class:`excerpt.llm_reasoning.ReasoningState`, with one addition:
+    Mirrors :class:`llm.reasoning.ReasoningState`, with one addition:
     every mutation is guarded by a lock, because ``complete_entries`` may
     drive several workers at once and an unguarded index would let two
     threads disagree about which dialect is current.
@@ -257,7 +257,7 @@ class SchemaState:
     The process-wide memory is not persisted to disk.  The correct spelling
     tracks the provider's current API, and a cached verdict from last month
     would pin the tool to a shape that may since have been dropped — the same
-    reasoning that keeps ``llm_check`` from caching transient verdicts.
+    reasoning that keeps ``llm.check`` from caching transient verdicts.
     """
 
     def __init__(self, *, start_index: int = 0) -> None:

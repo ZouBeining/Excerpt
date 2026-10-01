@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from excerpt import llm_cache
+from llm import cache as llm_cache
 
 
 class TestSanitizeModel:

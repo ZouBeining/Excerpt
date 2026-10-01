@@ -36,13 +36,13 @@ docs/ 目录下还有一份 MW API 的返回示例，供你参考。
   - 调用顺序.
     1. `excerpt/extractor`
     2. `lookup` (查询 + 写 `.words.json` / `.errors.json`)
-    3. `excerpt/llm`   (补全 + 更新 `.words.json` / `.errors.json`)
+    3. `llm`   (补全 + 更新 `.words.json` / `.errors.json`)
     4. `excerpt/write_md` (从最终 `.words.json` 生成 `.md`)
     5. `excerpt/latex` (从最终 `.words.json` 生成 `.tex`)
 
 - `excerpt/extractor.py`: 将输入 Markdown 文件中的所有加粗部分（可能是单个英文单词, 可能是短语, 可能是句子）提取出来.
   - 输出: 输出为 `{title}.index.json` 和 `{title}.{dict_slug}.index.md`. 两者表达同一份提取数据: .index.json 是标准 JSON, .index.md 是同一数据的 Markdown human-readable 索引.
-  - 单词检验: 识别加粗记录是否为单个单词, 若是, 则加入待查询列表并传给 `lookup`；若不是, 则写入 `{title}.{dict_slug}.errors.json`, 供 `llm.py` 补全.
+  - 单词检验: 识别加粗记录是否为单个单词, 若是, 则加入待查询列表并传给 `lookup`；若不是, 则写入 `{title}.{dict_slug}.errors.json`, 供 `llm` 补全.
   - 单个单词判定规则.
     - 去除首尾空白后, 必须匹配正则 `^[A-Za-z][A-Za-z'\-]*[A-Za-z]$`, 且长度（含撇号、连字符）≥ 2；
     - 至少包含一个英文字母；
@@ -54,14 +54,17 @@ docs/ 目录下还有一份 MW API 的返回示例，供你参考。
 
 - `lookup` 模块: 调用缓存和某个词典 API 查询加粗的单个单词. 这里涉及到多个模块, 你应当把这一步封装为一个独立于 `excerpt` 的名为 `lookup` 的新模块, 并在 `excerpt/cli.py` 中调用它. 你需要在这个新模块中编写一个 .py 程序（可以是 `__main__.py`）作为这一新模块的总入口, 并在其中调用子模块 `{dict_slug}_api.py`, `lemmatizer.py`, `write_json.py`. 对这一模块的具体要求见下文.
 
-- `excerpt/llm.py`: 用 LLM 补全不是单个单词的 entries. 读取 `{title}.{dict_slug}.errors.json`, 选取 需要补全的记录让 LLM 补全（判定标准见下）. 已 `filled` 的记录跳过, 保证幂等. 补全结构直接就地写入 `{title}.{dict_slug}.words.json`, 并同步更新 `{title}.{dict_slug}.errors.json` 的记录（将 `status` 字段由 `pending` 改为 `filled`）. 注意事项.
+- `llm` 模块: 用 LLM 补全不是单个单词的 entries. 读取 `{title}.{dict_slug}.errors.json`, 选取 需要补全的记录让 LLM 补全（判定标准见下）. 已 `filled` 的记录跳过, 保证幂等. 补全结构直接就地写入 `{title}.{dict_slug}.words.json`, 并同步更新 `{title}.{dict_slug}.errors.json` 的记录（将 `status` 字段由 `pending` 改为 `filled`）. 这里涉及到多个模块, 与 `lookup` 一样, 封装为一个独立于 `excerpt` 的顶层模块, 并在 `excerpt/cli.py` 中以 `import llm` + 属性访问（`llm.run(...)`）的方式调用它. 注意事项.
   - LLM 调用统一使用 `config.get_openai_settings()` 返回的 `(api_key, base_url, model)`, 走 OpenAI 兼容的 Chat Completions 接口；如果所用 provider 支持 JSON schema, 则启用结构化输出, 否则在 prompt 中要求返回严格 JSON 并对结果做 schema 校验和失败重试. 不要硬编码 `api.openai.com`.
-  - `llm.py` 只处理 `status == "pending"` 且 `type != "word"` 的记录, 也就是 `source == "extractor"` 产生的非单词记录. 单词查询失败仍由 `lookup/lemmatizer` 负责, 不由 LLM 处理.
+  - `llm/__main__.py` 只处理 `status == "pending"` 且 `type != "word"` 的记录, 也就是 `source == "extractor"` 产生的非单词记录. 单词查询失败仍由 `lookup/lemmatizer` 负责, 不由 LLM 处理.
   - 这里显然不需要 agent loop, 一条记录问一遍即可.
-  - 如果输入的是一个短语, 则分析的重点应该在短语的意思、使用场景和近义表达.
-  - 如果输入的是一个完整的句子, 则分析的侧重点应该在句型和其中的词汇使用（尤其是动词）, 而不是句意.
+  - 如果输入的是一个短语, 则分析的重点应该在短语的意思、使用场景和近义/反义表达.
+  - 如果输入的是一个完整的句子, 则分析的侧重点应该在**句型** —— 它传达什么、什么时候用、可以复用的语法是什么, 而不是句意, 更**不是句中某个单词的词义**. 句子记录的 `pos` 一律为字面量 `sentence`.
   - **不要** 生成词源、首次使用时间等元数据字段；这些字段在标准 schema 中可以为空.
   - 要求全英文输出.
+  - 例句要求: 约两句, 每句都是完整的、受过教育的成年人会写出的自然句子, 复用该短语或句型, **不得**是初中课本水平的简单句；`synonyms` / `antonyms` 也应是地道的短语表达, 而不是孤立的扁平单词.
+  - 模块结构（与 `lookup` 同构）: `llm/__init__.py` 只再导出主入口；`llm/__main__.py` 是编排（提示词、schema、请求循环、熔断, 以及 `run` / `complete_entries` / `SYSTEM_PROMPT` / `schema_for` 四个公开入口）；`llm/cache.py` 是补全缓存；`llm/check.py` 是预检探针；`llm/format.py` 是 `response_format` 方言候选链；`llm/reasoning.py` 是思考抑制字段候选链. 子模块之间不得形成循环引用, 且 `lookup` 不得 import `llm`.
+  - 包的导入形态: `excerpt/cli.py` 必须写成 `import llm` 并在调用点做属性访问 `llm.run(...)`, **不得**写成 `from llm import run` —— 否则测试里 `monkeypatch.setattr("llm.run", ...)` 打不到 CLI 持有的绑定, CLI 测试会真的发出 LLM 请求.
 
 - `excerpt/write_md.py`:
   - 根据 `{title}.index.json` 和 `{title}.{dict_slug}.words.json` 的内容稍加排版, 写入 `{title}.{dict_slug}.md`.
@@ -142,7 +145,7 @@ write_json.py
 - `{title}.index.json`（excerpt/extractor 生成）
 - `{title}.{dict_slug}.index.md`（excerpt/extractor 生成）
 - `{title}.{dict_slug}.words.json`（lookup/write_json 与 llm 共同维护）
-- `{title}.{dict_slug}.errors.json`（excerpt/extractor 初始化, lookup/write_json 与 excerpt/llm 维护）
+- `{title}.{dict_slug}.errors.json`（excerpt/extractor 初始化, lookup/write_json 与 llm 维护）
 - `{title}.{dict_slug}.md`（excerpt/write_md 生成）
 - `{title}.tex`（excerpt/latex 生成, 放在 `entries/` 子目录下）
 - `main.tex`、`preamble.excerpt.tex`（excerpt/latex 复制）
@@ -209,22 +212,22 @@ write_json.py
 - **`--llm-workers` 默认必须为 1（串行）.** 只有用户显式设置 >1 才并发. `workers <= 1` 必须走原串行路径, 保证与历史行为逐字一致.
 - **LLM 的超时与重试使用独立配置键**（`llm_timeout` / `llm_retries` / `llm_backoff`）, 不得复用 `TIMEOUT` / `RETRY` / `DELAY`. 词典的 GET 与推理模型的补全, 时间量级和失败模式完全不同, 共用会让正常的长首字节延迟被误判为超时.
 - **失败记录保持 `pending`.** LLM 失败时只写 `entry.detail`, **不得**改动 `entry.code` 或 `entry.source`. 这是幂等与"熔断后重跑续上"的基础: 只有 `code != CODE_OK` 的记录才会进 `.errors.json` 并保持 `pending`.
-- **熔断状态不落盘.** 它描述的是单次运行, 写盘会让下次运行被一个过期的"已中止"标记误伤. 这与 `llm_check.py` 从不缓存 transient 结论是同一个理由.
-- **新增 LLM provider 的思考强度写法时, 只在 `llm_reasoning.py` 的 `REASONING_CANDIDATES` 追加候选**, 不得在 `llm.py` 中硬编码 provider 名称或做供应商判断.
+- **熔断状态不落盘.** 它描述的是单次运行, 写盘会让下次运行被一个过期的"已中止"标记误伤. 这与 `llm/check.py` 从不缓存 transient 结论是同一个理由.
+- **新增 LLM provider 的思考强度写法时, 只在 `llm/reasoning.py` 的 `REASONING_CANDIDATES` 追加候选**, 不得在 `llm/__main__.py` 中硬编码 provider 名称或做供应商判断.
 - **新增任何 LLM 配置项时, 必须同步四处**: `config.py` 的 `_session_settings` 默认值、`configure()` 的三级优先级赋值、`.env.example` 的键、`tests/conftest.py` 的 `delenv` 列表. **缺一不可** —— `_session_settings` 是模块级可变对象, 测试环境变量清不掉它, 漏了最后一步会导致测试之间串状态.
 
 ## LLM 结构化输出与缓存的约束
 
-- **结构化输出必须逐级降级, 不得因供应商不支持而报错退出.** 候选列表定义在 `excerpt/llm_format.py` 的 `SCHEMA_CANDIDATES`, 最后一项是"不发 `response_format`"的终结兜底 —— 它不可能再因格式被拒, 因此"供应商不支持结构化输出"在结构上就无法让该阶段失败. 全部候选被拒时只提示一次并继续.
+- **结构化输出必须逐级降级, 不得因供应商不支持而报错退出.** 候选列表定义在 `llm/format.py` 的 `SCHEMA_CANDIDATES`, 最后一项是"不发 `response_format`"的终结兜底 —— 它不可能再因格式被拒, 因此"供应商不支持结构化输出"在结构上就无法让该阶段失败. 全部候选被拒时只提示一次并继续.
 - **`is_format_rejection` 必须以"错误里点到格式字段名"为必要条件, 不得依赖拒绝动词的具体措辞.** 端点写法各不相同（`does not support feature: structured-outputs`, `unsupported_response_format`, `json_object is not supported` …）, 把判定绑死在任何一种动词或分隔符上都会漏判. 曾因 marker 表里只有 `structured output`（空格）与 `structured_output`（下划线）而漏掉真实返回的 `structured-outputs`（连字符 + 复数）, 导致降级链完全不生效、退化成"重试同样请求再失败". 字段名用 `_FORMAT_FIELD_PATTERN` 正则匹配, 覆盖连字符 / 下划线 / 空格与单复数.
 - **未归因的 400/422 也必须前进一格候选.** `_classify_llm_error` 对未被 `auth`/`rate_limit`/`server`/`network`/`bad_reply` 认领的 400/422 返回 `"bad_request"`, `_request_completion` 据此 `state.advance()`. 理由: `response_format` 是本模块唯一在变的请求字段, 换一个试总比重发一个已知被拒的请求划算. 这条兜底保证措辞超出已知列表时阶段仍能降级而不 abort. 只在 `advance()` 为真时 `continue`, 末位落回 `attempt += 1`, 终止性不变.
-- **`is_format_rejection` 与 `is_reasoning_rejection` 不得互相认领对方的错误.** 两个轴对应两个不同的候选列表, 走错一个代价是每个候选多一次请求. 主保证是 `llm._request_completion` 里 reasoning 检查排在格式检查**之前**（不得调换）; 次保证是 `llm_format._REASONING_AXIS_PATTERN` —— 若拒绝动词指向 `reasoning`/`thinking`/`chat_template_kwargs`/`reasoning_effort`, 格式谓词主动让位. 格式谓词**刻意不匹配** `invalid_request_error` 与裸的 `unknown parameter`, 因为那两个措辞属于 reasoning 轴.
+- **`is_format_rejection` 与 `is_reasoning_rejection` 不得互相认领对方的错误.** 两个轴对应两个不同的候选列表, 走错一个代价是每个候选多一次请求. 主保证是 `llm.__main__._request_completion` 里 reasoning 检查排在格式检查**之前**（不得调换）; 次保证是 `llm.format._REASONING_AXIS_PATTERN` —— 若拒绝动词指向 `reasoning`/`thinking`/`chat_template_kwargs`/`reasoning_effort`, 格式谓词主动让位. 格式谓词**刻意不匹配** `invalid_request_error` 与裸的 `unknown parameter`, 因为那两个措辞属于 reasoning 轴.
 - **降级不消耗重试预算.** 被拒的是格式字段, 不是这次请求. `state.advance()` 返回 `True` 时应 `continue` 而不 `attempt += 1`, 否则一次探测就吃掉整条记录的重试次数.
 - **探测结论在进程内共享.** `complete_entries` 必须把同一个 `SchemaState` 传给所有 worker, 使第一个记录探出的写法被后续记录直接沿用. `_WORKING_INDEX` 只在请求**真正成功**后由 `confirm()` 写入 —— 越过一个候选只证明它被拒, 不等于下一个可用.
-- **新增 response_format 写法时, 只在 `llm_format.SCHEMA_CANDIDATES` 追加候选**, 不得在 `llm.py` 中硬编码 dialect 判断.
+- **新增 response_format 写法时, 只在 `llm.format.SCHEMA_CANDIDATES` 追加候选**, 不得在 `llm/__main__.py` 中硬编码 dialect 判断.
 - **`ReasoningState` 与 `SchemaState` 的每次变更都必须持 `_PROBE_LOCK`.** 二者都被 `complete_entries` 的多个 worker 共享, 无锁计数会让两个线程对"当前候选"产生分歧.
 - **LLM 输出缓存只存已通过 `_validate` 的 payload, 永不存失败.** 超时 / 429 / 5xx / 坏 JSON 一旦落盘, 一次临时故障就被永久冻结. 缓存的值是 payload 而非成品 entry —— entry 还挂着 `code`、行号等本次运行的信息.
-- **缓存键为 `sha256(词条文本 | 类型 | PROMPT_VERSION)`.** 模型名不进键（它是文件名）, 但**改动提示词或期望返回结构时必须自增 `llm_format.PROMPT_VERSION`**, 否则旧答案会被继续复用.
+- **缓存键为 `sha256(词条文本 | 类型 | PROMPT_VERSION)`.** 模型名不进键（它是文件名）, 但**改动提示词或期望返回结构时必须自增 `llm.format.PROMPT_VERSION`**, 否则旧答案会被继续复用.
 - **缓存文件名为 `~/.cache/excerpt/{model}.cache.json`, 模型名中的非法字符（尤其 `/` 和 `:`）必须替换为 `_`.** Windows 上 `:` 会被当作数据流分隔符, 直接写入会失败.
 - **缓存默认开启的边界在 CLI 层.** `llm.run()` / `complete_entries()` 只在显式收到 `cache` 参数时才启用; 不传即不缓存, 库层不得自行打开 `~/.cache`（避免对库调用产生隐式文件副作用）.
 - **写入缓存、打印日志、改动 entry 三者都只允许在主线程 (`_apply_result`) 完成.** worker 只负责"发请求 + 解析", 与"worker 线程不得落盘"是同一条约束.

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from excerpt import llm_format
+from llm import format as llm_format
 
 
 @pytest.fixture(autouse=True)

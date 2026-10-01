@@ -21,11 +21,11 @@ the caller walk that list until one is accepted.
 The winning candidate is remembered **in memory only**.  Persisting it would
 be a mistake: the correct field tracks the provider's current API, and a
 cached verdict from last month would pin the tool to a spelling that has since
-been dropped — the same reasoning that keeps ``llm_check`` from caching its
+been dropped — the same reasoning that keeps ``llm.check`` from caching its
 transient verdicts.
 
-Nothing here imports the rest of ``excerpt``; the module is a leaf that only
-needs ``common.config`` types, so it cannot create an import cycle.
+Nothing here imports a sibling module; the module is a leaf that only needs
+the standard library, so it cannot create an import cycle.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ class ReasoningState:
     Every mutation is guarded by a lock, because ``complete_entries`` may
     drive several workers at once and an unguarded index would let two threads
     disagree about which dialect is current.  The guard mirrors
-    :class:`excerpt.llm_format.SchemaState`, which has the same problem for
+    :class:`llm.format.SchemaState`, which has the same problem for
     the ``response_format`` axis.
     """
 

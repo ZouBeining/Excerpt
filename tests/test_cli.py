@@ -281,7 +281,7 @@ class TestPipeline:
             called.append((art.title, kwargs.get("cache")))
             return list(entries)
 
-        monkeypatch.setattr("excerpt.llm.run", fake_llm_run)
+        monkeypatch.setattr("llm.run", fake_llm_run)
 
         source = tmp_path / "s.md"
         source.write_text(SAMPLE, encoding="utf-8")
@@ -296,7 +296,7 @@ class TestPipeline:
     def test_llm_stage_is_skipped_when_disabled(self, tmp_path, stub_lookup, monkeypatch):
         called: list = []
         monkeypatch.setattr(
-            "excerpt.llm.run", lambda *a, **k: called.append(1) or a[0]
+            "llm.run", lambda *a, **k: called.append(1) or a[0]
         )
 
         source = tmp_path / "s.md"
@@ -313,7 +313,7 @@ class TestPipeline:
             seen.append(kwargs.get("cache"))
             return list(entries)
 
-        monkeypatch.setattr("excerpt.llm.run", fake_llm_run)
+        monkeypatch.setattr("llm.run", fake_llm_run)
 
         source = tmp_path / "s.md"
         source.write_text(SAMPLE, encoding="utf-8")
@@ -340,7 +340,7 @@ class TestPipeline:
             seen.append(kwargs.get("cache"))
             return list(entries)
 
-        monkeypatch.setattr("excerpt.llm.run", fake_llm_run)
+        monkeypatch.setattr("llm.run", fake_llm_run)
 
         source = tmp_path / "s.md"
         source.write_text(SAMPLE, encoding="utf-8")
@@ -365,14 +365,14 @@ class TestLlmPreflight:
     def test_preflight_passes_when_config_is_valid(
         self, tmp_path, stub_lookup, monkeypatch, capsys
     ):
-        from excerpt.llm_check import CheckResult
+        from llm.check import CheckResult
 
         monkeypatch.setattr(
             "excerpt.cli.check_llm_config",
             lambda **kwargs: CheckResult(ok=True, code="OK", status=200),
         )
         monkeypatch.setattr(
-            "excerpt.llm.run", lambda entries, art, dict_slug="", **kw: entries
+            "llm.run", lambda entries, art, dict_slug="", **kw: entries
         )
 
         source = tmp_path / "s.md"
@@ -386,7 +386,7 @@ class TestLlmPreflight:
     def test_preflight_aborts_on_invalid_config(
         self, tmp_path, stub_lookup, monkeypatch, capsys
     ):
-        from excerpt.llm_check import CheckResult
+        from llm.check import CheckResult
 
         monkeypatch.setattr(
             "excerpt.cli.check_llm_config",
@@ -396,7 +396,7 @@ class TestLlmPreflight:
         )
         ran: list = []
         monkeypatch.setattr(
-            "excerpt.llm.run", lambda *a, **k: ran.append(1) or a[0]
+            "llm.run", lambda *a, **k: ran.append(1) or a[0]
         )
 
         source = tmp_path / "s.md"
@@ -413,7 +413,7 @@ class TestLlmPreflight:
     def test_preflight_warns_but_continues_when_transient(
         self, tmp_path, stub_lookup, monkeypatch, capsys
     ):
-        from excerpt.llm_check import CheckResult
+        from llm.check import CheckResult
 
         monkeypatch.setattr(
             "excerpt.cli.check_llm_config",
@@ -422,7 +422,7 @@ class TestLlmPreflight:
             ),
         )
         monkeypatch.setattr(
-            "excerpt.llm.run", lambda entries, art, dict_slug="", **kw: entries
+            "llm.run", lambda entries, art, dict_slug="", **kw: entries
         )
 
         source = tmp_path / "s.md"
@@ -443,7 +443,7 @@ class TestLlmPreflight:
 
         monkeypatch.setattr("excerpt.cli.check_llm_config", explode)
         monkeypatch.setattr(
-            "excerpt.llm.run", lambda entries, art, dict_slug="", **kw: entries
+            "llm.run", lambda entries, art, dict_slug="", **kw: entries
         )
 
         source = tmp_path / "s.md"

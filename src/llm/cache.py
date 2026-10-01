@@ -13,13 +13,13 @@ answer, not a stale one.
 
 What is cached, and what is not
 -------------------------------
-Only a reply that already passed :func:`excerpt.llm._validate` is stored.  A
+Only a reply that already passed :func:`llm.__main__._validate` is stored.  A
 failure is never frozen: the next run must be free to succeed, so timeouts,
 rate limits and malformed JSON are deliberately left out — the same rule
 ``lookup.cache`` applies to the dictionary.
 
 The key is a hash of the record's text, its type and
-:data:`excerpt.llm_format.PROMPT_VERSION`.  The prompt version is part of the
+:data:`llm.format.PROMPT_VERSION`.  The prompt version is part of the
 key so that improving the prompt invalidates every stored completion at once,
 without a migration and without a cache-file layout change.  The model is
 *not* in the key: it is already the filename.
@@ -41,7 +41,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from .llm_format import PROMPT_VERSION
+from .format import PROMPT_VERSION
 
 __all__ = [
     "CACHE_VERSION",

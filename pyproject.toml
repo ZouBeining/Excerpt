@@ -26,4 +26,4 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = "src"
-module-name = ["excerpt", "lookup", "common"]
+module-name = ["excerpt", "lookup", "llm", "common"]

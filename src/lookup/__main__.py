@@ -59,7 +59,7 @@ def lookup_entries(
 ) -> list[BoldEntry]:
     """Resolve every word entry in place and return the list.
 
-    Non-word entries are left untouched: they are handled by ``excerpt.llm``.
+    Non-word entries are left untouched: they are handled by ``llm``.
     ``source`` is recomputed for every entry on every run, so ``cache`` versus
     ``api`` always reflects *this* run.
 

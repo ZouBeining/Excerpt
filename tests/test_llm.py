@@ -19,7 +19,10 @@ from common.config import (
     SOURCE_LLM,
     BoldEntry,
 )
-from excerpt import llm, llm_cache, llm_format, llm_reasoning
+from llm import __main__ as llm
+from llm import cache as llm_cache
+from llm import format as llm_format
+from llm import reasoning as llm_reasoning
 
 
 @pytest.fixture(autouse=True)

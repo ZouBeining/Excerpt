@@ -13,8 +13,8 @@ import pytest
 import requests
 
 from common import config
-from excerpt import llm_check
-from excerpt.llm_check import (
+from llm import check as llm_check
+from llm.check import (
     CHECK_VERSION,
     CheckResult,
     check_llm_config,

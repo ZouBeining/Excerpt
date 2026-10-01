@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from excerpt import llm_reasoning
+from llm import reasoning as llm_reasoning
 
 
 @pytest.fixture(autouse=True)

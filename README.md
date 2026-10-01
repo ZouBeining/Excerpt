@@ -116,7 +116,7 @@ excerpt notes.md --no-cache
 ### LLM 预检（preflight）
 
 只要 `USE_LLM=True`，程序在**任何处理开始之前**会先用一个最小请求探测 LLM  
-配置是否可用（`excerpt/llm_check.py`）：
+配置是否可用（`llm/check.py`）：
 
 - **配置有效** → 打印 `[llm] configuration verified: ok`，继续执行。
 - **配置无效**（401 / 403 / 404 / 缺字段 / 网络不可达）→ 打印一行 `[error]`  
@@ -397,11 +397,16 @@ src/
     cli.py                  # 5 阶段总管线
     arg.py                  # 命令行参数
     extractor.py            # 提取加粗 + 分类
-    llm_check.py            # LLM 配置预检（用 requests，带缓存）
-    llm.py                  # LLM 补全短语 / 句子
+    bold.py                 # 加粗标记渲染（提取器与渲染器共用）
     write_md.py             # 生成 Markdown 笔记与索引
     latex.py                # 生成 LaTeX（含 excerpt-latex 入口）
     main.tex / preamble.excerpt.tex
+  llm/                      # 独立于 excerpt 的 LLM 补全模块
+    __main__.py             # 编排：提示词、schema、请求循环、熔断
+    cache.py                # 补全缓存（键含 PROMPT_VERSION）
+    check.py                # LLM 配置预检（用 requests，带缓存）
+    format.py               # response_format 方言候选链
+    reasoning.py            # 思考抑制字段候选链
   lookup/                   # 独立于 excerpt 的查询模块
     __main__.py             # 编排：查原词 → 还原原形 → 复查 → 合并 → 写 JSON
     http.py                 # 带重试的请求封装（不抛异常）

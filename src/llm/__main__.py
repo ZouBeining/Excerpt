@@ -8,16 +8,19 @@ sees them.
 The provider is described entirely by :func:`common.config.get_openai_settings`
 (an OpenAI-compatible Chat Completions endpoint), so nothing here is tied to a
 particular vendor.  Structured output is attempted through the candidate list
-in :mod:`excerpt.llm_format`, which walks from full JSON Schema down to
-"send nothing and rely on the prompt"; a provider that understands none of the
-dialects therefore still completes every record instead of failing the stage.
+in :mod:`llm.format`, which walks from full JSON Schema down to "send nothing
+and rely on the prompt"; a provider that understands none of the dialects
+therefore still completes every record instead of failing the stage.
 
 Output is English only, and the analysis is angled per record type:
 
 * a **phrase** is explained in terms of meaning, usage and near-synonyms;
-* a **sentence** is mined for structure and verb usage, not translated.
+* a **sentence** is mined for its pattern, never for one word inside it.
 
 Etymology and first-use metadata are deliberately left empty.
+
+Orchestration lives here; the concerns it walks through are separate siblings
+(:mod:`llm.cache`, :mod:`llm.check`, :mod:`llm.format`, :mod:`llm.reasoning`).
 """
 
 from __future__ import annotations
@@ -48,7 +51,12 @@ from common.config import (
 
 from lookup import write_json
 
-from . import llm_cache, llm_format, llm_reasoning
+# Aliased to the old ``llm_*`` names so the body below reads unchanged from
+# when these were ``excerpt.llm_*`` modules.  ``format`` is aliased for a second
+# reason: as a bare name it would shadow the builtin.
+from . import cache as llm_cache
+from . import format as llm_format
+from . import reasoning as llm_reasoning
 
 __all__ = ["SYSTEM_PROMPT", "complete_entries", "run", "schema_for"]
 
@@ -423,7 +431,7 @@ def _request_completion(
 
 
 def _looks_like_schema_rejection(exc: Exception) -> bool:
-    """Deprecated alias of :func:`excerpt.llm_format.is_format_rejection`.
+    """Deprecated alias of :func:`llm.format.is_format_rejection`.
 
     Kept because the narrower predicate now lives with the candidate list it
     belongs to, while callers (and older tests) may still reach for this name.
@@ -549,7 +557,7 @@ class _CircuitBreaker:
 
     The tripped state is **not** persisted.  It describes one run, and a stale
     "aborted" flag on disk would wrongly suppress the *next* run, which is
-    exactly the mistake ``llm_check`` avoids by never caching transient
+    exactly the mistake ``llm.check`` avoids by never caching transient
     verdicts.  Entries left untouched stay ``pending`` and are retried on the
     next invocation through the existing idempotency rule.
     """
@@ -624,7 +632,7 @@ def complete_entries(
 
     ``use_schema`` is retained for backward compatibility only.  Setting it to
     ``False`` starts the dialect walk at its terminal entry, i.e. sends no
-    ``response_format``; the default lets :mod:`excerpt.llm_format` discover
+    ``response_format``; the default lets :mod:`llm.format` discover
     what the endpoint actually understands.
     """
     targets = [
